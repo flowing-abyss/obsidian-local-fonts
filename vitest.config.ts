@@ -26,7 +26,7 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: ['src/**/*.ts'],
-      exclude: ['src/**/*.test.ts'],
+      exclude: ['src/**/*.test.ts', 'src/fonts/types.ts', 'src/fonts/fixtures.ts'],
       reporter: ['text', 'json-summary', 'html'],
       thresholds: {
         perFile: true,

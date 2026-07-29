@@ -12,4 +12,13 @@
     "wdio-obsidian-reporter",
   ],
   "include": ["files", "dependencies", "unlisted", "unresolved", "exports", "types", "duplicates"],
+  "ignore": [
+    // Test-only support code (fixture path helper used by unit tests, not by the
+    // plugin itself). This entry is permanent, unlike the entry above.
+    "src/fonts/fixtures.ts",
+    // EMOJI_UNICODE_RANGE is consumed only internally today; it is exported because a
+    // later task (settings UI / diagnostics) needs the exact range CSS uses. This entry
+    // comes out once that lands.
+    "src/fonts/css.ts",
+  ],
 }
