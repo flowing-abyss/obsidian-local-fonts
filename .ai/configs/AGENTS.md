@@ -1,6 +1,14 @@
-# Obsidian community plugin
+# Local Fonts — Obsidian community plugin
 
-Reference template for an Obsidian Community Plugin (TypeScript → `main.js` via esbuild). Read `src/main.ts`/`src/settings.ts` for the real code pattern, and run `pnpm run <script>` to see what's available — this file only covers what isn't already enforced by config/tooling or discoverable that way.
+Loads font files from a folder inside the vault (hidden by default, `.fonts`) and applies them to text, interface, monospace, headings and emoji, on desktop and mobile. TypeScript → `main.js` via esbuild. Run `pnpm run <script>` to see what's available — this file only covers what isn't already enforced by config/tooling or discoverable from the code.
+
+## Invariants that no single file makes obvious
+
+- **The cache in `data.json` must stay platform-neutral.** It syncs across devices, so `scanner`/`metadata`/`catalog` store every face with its full colour-format set and choose nothing. All platform-dependent selection happens in `select.ts`/`css.ts` at CSS-generation time, on the device doing the rendering. A cached _choice_ silently corrupts other platforms — the worst bug shape this design has.
+- **Never use `Vault`'s indexed file APIs** (`vault.getFiles()`, `getAbstractFileByPath`, `vault.read`). They cannot see dot-folders, and a hidden fonts folder is a hard requirement. Use `vault.adapter` only.
+- **`onload()` performs no font I/O.** It reads the cache and injects one stylesheet; scanning is deferred to `onLayoutReady` and runs only when the folder actually changed.
+- **Chromium has never shipped OT-SVG; WebKit has.** That asymmetry is the whole reason per-platform face selection exists. The capability matrix lives in `src/fonts/platform.ts` — it is the one place to correct when a real device contradicts it.
+- Fonts are served via `adapter.getResourcePath()`, never base64. That is the performance premise: the browser lazily fetches only the faces it uses.
 
 ## Manual UI verification
 
