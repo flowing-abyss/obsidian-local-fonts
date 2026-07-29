@@ -12,26 +12,20 @@ export type Engine = 'chromium' | 'webkit';
  * support arrived late and may be version-dependent on older iOS — treated as supported
  * here, and correctable in this one place if a device says otherwise.
  */
-const MATRIX: Record<Engine, readonly ColorFormat[]> = {
-  chromium: ['COLR0', 'COLR1', 'CBDT', 'sbix'],
-  webkit: ['COLR0', 'COLR1', 'CBDT', 'sbix', 'SVG'],
-};
-
 const CAPABILITIES: Record<Engine, ReadonlySet<ColorFormat>> = {
-  chromium: new Set(MATRIX.chromium),
-  webkit: new Set(MATRIX.webkit),
+  chromium: new Set(['COLR0', 'COLR1', 'CBDT', 'sbix']),
+  webkit: new Set(['COLR0', 'COLR1', 'CBDT', 'sbix', 'SVG']),
 };
 
-/**
- * Chromium's UA also contains "AppleWebKit" and "Safari", so those cannot be the test.
- * Anything that announces Chrome/Chromium/Electron is Chromium; iOS is the WebKit case.
- * Unknown UAs fall back to Chromium, which is every desktop platform.
- */
 export function detectEngine(userAgent: string): Engine {
+  // Chromium's UA also contains "AppleWebKit" and "Safari", so this branch MUST come
+  // first — inverting these two returns 'webkit' for every desktop and Android install.
   if (/Chrome\/|Chromium\/|Electron\//.test(userAgent)) {
     return 'chromium';
   }
-  if (/iPhone|iPad|iPod/.test(userAgent)) {
+  // Catches iOS and iPadOS, including the desktop-site UA that iPadOS 13+ sends by
+  // default, which carries no iPad token at all.
+  if (/AppleWebKit\//.test(userAgent)) {
     return 'webkit';
   }
   return 'chromium';

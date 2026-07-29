@@ -24,6 +24,19 @@ describe('detectEngine', () => {
   it('falls back to chromium for an unrecognised UA, matching every desktop platform', () => {
     expect(detectEngine('something else entirely')).toBe('chromium');
   });
+
+  it('detects WebKit on iPadOS, whose default UA carries no iPad token at all', () => {
+    const IPADOS_DESKTOP_UA =
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15';
+
+    expect(detectEngine(IPADOS_DESKTOP_UA)).toBe('webkit');
+  });
+
+  it('checks Chromium before WebKit — the Electron UA contains AppleWebKit too', () => {
+    // Guards the branch order: inverting the two checks makes this return 'webkit'.
+    expect(MACOS_ELECTRON_UA).toContain('AppleWebKit/');
+    expect(detectEngine(MACOS_ELECTRON_UA)).toBe('chromium');
+  });
 });
 
 describe('capabilitiesFor', () => {
