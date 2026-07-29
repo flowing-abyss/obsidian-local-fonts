@@ -13,6 +13,10 @@
   ],
   "include": ["files", "dependencies", "unlisted", "unresolved", "exports", "types", "duplicates"],
   "ignore": [
+    // ColorFormat/Script/VariableAxis are consumed by sfnt.ts as of Task 4. The
+    // remaining exports (FaceRecord, FontFormat, MetadataSource, CACHE_VERSION) are
+    // consumed by the cache layer in a later task; this entry comes out once every
+    // export here is used.
     "src/fonts/types.ts",
     // RoleName/RoleAssignments are consumed by the settings UI in a later task; this
     // entry comes out once that lands (mirrors the src/fonts/types.ts entry above).
