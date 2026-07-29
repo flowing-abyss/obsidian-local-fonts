@@ -90,7 +90,15 @@ async function collect(
 
   const fonts = listing.files.filter((file) => formatOf(file) !== null);
   const stamped = await mapLimit(fonts, CONCURRENCY_LIMIT, async (path) => {
-    const stat = await adapter.stat(path);
+    let stat: { size: number; mtime: number } | null;
+    try {
+      stat = await adapter.stat(path);
+    } catch (error) {
+      // One unreadable file (permission oddity, interrupted sync, ...) must not take
+      // down the whole scan; the user still gets every other font.
+      console.warn(`[local-fonts] failed to stat font file, skipping: ${path}`, error);
+      return null;
+    }
     return stat === null ? null : { path, size: stat.size, mtime: stat.mtime, siblings: fonts };
   });
   for (const file of stamped) {
@@ -109,13 +117,22 @@ export async function scanFolder(adapter: FontAdapter, folder: string): Promise<
   const found: FoundFile[] = [];
   await collect(adapter, folder, found, new Set());
 
-  return mapLimit(found, CONCURRENCY_LIMIT, (file) =>
-    extractMetadata({
-      path: file.path,
-      size: file.size,
-      mtime: file.mtime,
-      siblings: file.siblings,
-      read: memoizedReader(adapter),
-    }),
-  );
+  const extracted = await mapLimit(found, CONCURRENCY_LIMIT, async (file) => {
+    try {
+      return await extractMetadata({
+        path: file.path,
+        size: file.size,
+        mtime: file.mtime,
+        siblings: file.siblings,
+        read: memoizedReader(adapter),
+      });
+    } catch (error) {
+      // extractMetadata is contractually non-throwing, but a single bad file must not
+      // be able to take down the whole scan even if that contract regresses later:
+      // defence in depth, not trust in a neighbouring module's promise.
+      console.warn(`[local-fonts] failed to read font metadata, skipping: ${file.path}`, error);
+      return null;
+    }
+  });
+  return extracted.filter((record): record is FaceRecord => record !== null);
 }
