@@ -38,9 +38,14 @@ function fontFace(face: FaceRecord, url: string, isEmoji: boolean): string {
   return lines.join('\n');
 }
 
-/** Emoji first (see EMOJI_UNICODE_RANGE), then the role family, then the theme's own value. */
+/**
+ * Emoji first (see EMOJI_UNICODE_RANGE), then the role family, then the theme's own
+ * value. Skips the emoji entry when it is the same family as the role, so a family
+ * assigned to both `emoji` and this role does not appear twice in the stack.
+ */
 function stack(family: string, emoji: string | null, fallback: string): string {
-  const parts = emoji !== null ? [quote(emoji), quote(family)] : [quote(family)];
+  const parts =
+    emoji !== null && emoji !== family ? [quote(emoji), quote(family)] : [quote(family)];
   return `${parts.join(', ')}, ${fallback}`;
 }
 
@@ -122,33 +127,42 @@ export function buildCss(input: BuildCssInput): string {
 /**
  * `!important` rules for themes that hardcode font-family.
  *
- * `:not(.svg-icon)` and the icon-font exclusions are load-bearing: a blanket override
- * replaces Obsidian's interface icon font and renders empty boxes instead of icons.
+ * The container selectors below carry no icon exclusion: a compound `:not(.svg-icon)`
+ * on the container itself (e.g. `body:not(.svg-icon)`) never excludes anything, because
+ * `body` is never `.svg-icon` — it only blocks the rule from matching an icon element
+ * directly, while the forced `font-family` still *inherits* into every descendant,
+ * icons included, regardless of any `:not()` on the ancestor. The one thing that
+ * actually protects icons is the explicit reset rule appended at the end: it runs last
+ * in source order, so it wins the cascade against the rules above without needing
+ * excess specificity, and `font-family: revert` hands inheritance back to whatever the
+ * icon font's own rule (or the theme) declares.
  */
 function buildHardOverrides(roles: RoleAssignments): string {
   const emoji = roles.emoji;
   const rules: string[] = [];
-  const notIcon = ':not(.svg-icon):not(.svg-icon *)';
 
   if (roles.text !== null) {
     rules.push(
-      `.markdown-preview-view${notIcon},\n.markdown-source-view${notIcon} {\n  font-family: ${stack(roles.text, emoji, 'sans-serif')} !important;\n}`,
+      `.markdown-preview-view,\n.markdown-source-view {\n  font-family: ${stack(roles.text, emoji, 'sans-serif')} !important;\n}`,
     );
   }
   if (roles.interface !== null) {
     rules.push(
-      `body${notIcon} {\n  font-family: ${stack(roles.interface, emoji, 'sans-serif')} !important;\n}`,
+      `body {\n  font-family: ${stack(roles.interface, emoji, 'sans-serif')} !important;\n}`,
     );
   }
   if (roles.monospace !== null) {
     rules.push(
-      `.cm-editor .cm-content${notIcon},\ncode${notIcon},\npre${notIcon} {\n  font-family: ${stack(roles.monospace, emoji, 'monospace')} !important;\n}`,
+      `.cm-editor .cm-content,\ncode,\npre {\n  font-family: ${stack(roles.monospace, emoji, 'monospace')} !important;\n}`,
     );
   }
   if (roles.headings !== null) {
     rules.push(
-      `h1${notIcon}, h2${notIcon}, h3${notIcon}, h4${notIcon}, h5${notIcon}, h6${notIcon} {\n  font-family: ${stack(roles.headings, emoji, 'inherit')} !important;\n}`,
+      `h1, h2, h3, h4, h5, h6 {\n  font-family: ${stack(roles.headings, emoji, 'inherit')} !important;\n}`,
     );
+  }
+  if (rules.length > 0) {
+    rules.push('.svg-icon, .svg-icon * {\n  font-family: revert !important;\n}');
   }
   return rules.join('\n\n');
 }
