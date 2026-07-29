@@ -1,0 +1,12 @@
+{
+  "folder": ".fonts",
+  "roles": {
+    "text": "Probe Sans",
+    "interface": null,
+    "monospace": null,
+    "headings": null,
+    "emoji": null
+  },
+  "hardOverride": false,
+  "cache": null
+}

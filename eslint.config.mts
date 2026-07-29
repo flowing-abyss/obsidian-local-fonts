@@ -202,6 +202,24 @@ export default defineConfig(
     },
   },
   {
+    // This spec's `measure()` helpers reimplement src/fonts/probe.ts's technique inside
+    // `executeObsidian` callbacks that run live inside a real Obsidian window (not under
+    // jsdom), to prove text actually rendered in the chosen font rather than a fallback.
+    // The same reasoning as probe.ts's own override applies: static inline styles are
+    // required so no theme or the plugin's own generated CSS can perturb the
+    // measurement, `createSpan`'s availability inside `executeObsidian`'s serialized,
+    // sandboxed callback is unproven, and the sample text is a font-metrics probe, not
+    // UI copy, so sentence-case / timer-registration conventions for shipped UI don't
+    // apply to it.
+    files: ['tests/e2e/fonts.e2e.ts'],
+    rules: {
+      'obsidianmd/no-static-styles-assignment': 'off',
+      'obsidianmd/prefer-create-el': 'off',
+      'obsidianmd/ui/sentence-case': 'off',
+      'obsidianmd/prefer-window-timers': 'off',
+    },
+  },
+  {
     // The "Fonts found" heading sits above the diagnostics cards, which are read-only
     // information (what was parsed out of the user's font files), not settings — the
     // settings surface itself is deliberately capped at seven controls (folder, five
