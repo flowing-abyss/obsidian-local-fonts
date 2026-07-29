@@ -65,4 +65,46 @@ describe('scanFolder', () => {
 
     await expect(scanFolder(adapter, '.fonts')).resolves.toHaveLength(1);
   });
+
+  it('reads a woff2 file only once even though metadata extraction asks for its bytes twice', async () => {
+    let readCount = 0;
+    const adapter: FontAdapter = {
+      list: async (path) =>
+        path === '.fonts'
+          ? { files: ['.fonts/probe-sans-400.woff2'], folders: [] }
+          : { files: [], folders: [] },
+      stat: async () => ({ size: 1234, mtime: 42 }),
+      readBinary: async () => {
+        readCount++;
+        return readFixture('probe-sans/probe-sans-400.woff2');
+      },
+    };
+
+    await scanFolder(adapter, '.fonts');
+
+    expect(readCount).toBe(1);
+  });
+
+  it('preserves deterministic ordering regardless of which file resolves first', async () => {
+    const delays: Record<string, number> = {
+      '.fonts/a-400.ttf': 20,
+      '.fonts/b-400.ttf': 0,
+    };
+    const adapter: FontAdapter = {
+      list: async (path) =>
+        path === '.fonts'
+          ? { files: ['.fonts/a-400.ttf', '.fonts/b-400.ttf'], folders: [] }
+          : { files: [], folders: [] },
+      stat: async () => ({ size: 1234, mtime: 42 }),
+      readBinary: async (path) => {
+        const delay = delays[path] ?? 0;
+        await new Promise((resolve) => window.setTimeout(resolve, delay));
+        return readFixture('probe-sans/probe-sans-400.ttf');
+      },
+    };
+
+    const faces = await scanFolder(adapter, '.fonts');
+
+    expect(faces.map((face) => face.path)).toStrictEqual(['.fonts/a-400.ttf', '.fonts/b-400.ttf']);
+  });
 });

@@ -17,11 +17,7 @@
     // entry comes out once that lands (mirrors the src/fonts/types.ts entry above).
     "src/settings.ts",
     // Test-only support code (fixture path helper used by unit tests, not by the
-    // plugin itself). This entry is permanent, unlike the two above.
+    // plugin itself). This entry is permanent, unlike the entry above.
     "src/fonts/fixtures.ts",
-    // FileReader is the shape the vault-scanning layer will implement in a later
-    // task; extractMetadata takes it as a parameter type, not a re-exported symbol,
-    // so knip can't see the future caller. This entry comes out once that lands.
-    "src/fonts/metadata.ts",
   ],
 }

@@ -1,5 +1,5 @@
 import { formatOf } from './filename.js';
-import { extractMetadata } from './metadata.js';
+import { extractMetadata, type FileReader } from './metadata.js';
 import type { FaceRecord } from './types.js';
 
 /**
@@ -20,6 +20,52 @@ interface FoundFile {
   size: number;
   mtime: number;
   siblings: string[];
+}
+
+/**
+ * Caps how many files are read/decoded/parsed at once. Fonts can run tens of megabytes
+ * each, and this scan may run on mobile: unbounded `Promise.all` over the whole folder
+ * would hold every file's bytes in memory simultaneously. A small fixed pool still lets
+ * I/O latency overlap across files without that spike.
+ */
+const CONCURRENCY_LIMIT = 8;
+
+/**
+ * Map over `items` with at most `limit` calls to `fn` in flight at once, preserving
+ * output order regardless of which call settles first — a later stage (CSS generation)
+ * needs byte-identical, run-to-run-stable output.
+ */
+async function mapLimit<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = [];
+  for (let start = 0; start < items.length; start += limit) {
+    const chunk = items.slice(start, start + limit);
+    results.push(...(await Promise.all(chunk.map(fn))));
+  }
+  return results;
+}
+
+/**
+ * One `extractMetadata` call may ask for the same path's bytes twice (once to decode
+ * the font, again for colour formats when the decode didn't already surface them). This
+ * memoizes reads for a single file's extraction only — a scan-wide cache would keep
+ * every font's bytes alive for the whole scan, which is what CONCURRENCY_LIMIT above is
+ * trying to avoid.
+ */
+function memoizedReader(adapter: FontAdapter): FileReader {
+  const inFlight = new Map<string, Promise<ArrayBuffer>>();
+  return (path) => {
+    const cached = inFlight.get(path);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const pending = adapter.readBinary(path);
+    inFlight.set(path, pending);
+    return pending;
+  };
 }
 
 async function collect(
@@ -43,10 +89,13 @@ async function collect(
   }
 
   const fonts = listing.files.filter((file) => formatOf(file) !== null);
-  for (const path of fonts) {
+  const stamped = await mapLimit(fonts, CONCURRENCY_LIMIT, async (path) => {
     const stat = await adapter.stat(path);
-    if (stat !== null) {
-      out.push({ path, size: stat.size, mtime: stat.mtime, siblings: fonts });
+    return stat === null ? null : { path, size: stat.size, mtime: stat.mtime, siblings: fonts };
+  });
+  for (const file of stamped) {
+    if (file !== null) {
+      out.push(file);
     }
   }
 
@@ -60,17 +109,13 @@ export async function scanFolder(adapter: FontAdapter, folder: string): Promise<
   const found: FoundFile[] = [];
   await collect(adapter, folder, found, new Set());
 
-  const records: FaceRecord[] = [];
-  for (const file of found) {
-    records.push(
-      await extractMetadata({
-        path: file.path,
-        size: file.size,
-        mtime: file.mtime,
-        siblings: file.siblings,
-        read: (path) => adapter.readBinary(path),
-      }),
-    );
-  }
-  return records;
+  return mapLimit(found, CONCURRENCY_LIMIT, (file) =>
+    extractMetadata({
+      path: file.path,
+      size: file.size,
+      mtime: file.mtime,
+      siblings: file.siblings,
+      read: memoizedReader(adapter),
+    }),
+  );
 }

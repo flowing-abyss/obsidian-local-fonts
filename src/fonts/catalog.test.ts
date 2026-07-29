@@ -63,6 +63,19 @@ describe('isCacheStale', () => {
 
     expect(isCacheStale(cache([face({})]), '.fonts', files)).toBe(true);
   });
+
+  it('is stale when a file was removed', () => {
+    const cached = cache([face({}), face({ path: '.fonts/b-400.woff2' })]);
+    const files = [{ path: '.fonts/a-400.woff2', size: 10, mtime: 1 }];
+
+    expect(isCacheStale(cached, '.fonts', files)).toBe(true);
+  });
+
+  it('is stale when a file changed size but not mtime', () => {
+    const files = [{ path: '.fonts/a-400.woff2', size: 999, mtime: 1 }];
+
+    expect(isCacheStale(cache([face({})]), '.fonts', files)).toBe(true);
+  });
 });
 
 describe('buildCache', () => {
