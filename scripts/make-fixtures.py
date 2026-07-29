@@ -83,6 +83,7 @@ def save(fb, path, flavor=None):
 # Wide boxes — 600 units of advance.
 save(build("Probe Sans", "Regular", 400, False, 600), os.path.join(OUT, "probe-sans", "probe-sans-400.ttf"))
 save(build("Probe Sans", "Regular", 400, False, 600), os.path.join(OUT, "probe-sans", "probe-sans-400.woff2"), "woff2")
+save(build("Probe Sans", "Regular", 400, False, 600), os.path.join(OUT, "probe-sans", "probe-sans-400.woff"), "woff")
 save(build("Probe Sans", "Bold Italic", 700, True, 600), os.path.join(OUT, "probe-sans", "probe-sans-700italic.ttf"))
 
 # Narrow boxes — 300 units. Measurably different from Probe Sans at the same size.

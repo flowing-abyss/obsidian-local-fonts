@@ -9,7 +9,15 @@ const FORMATS: Record<string, FontFormat> = {
 
 /** The container format implied by a path's extension, or null if it is not a font. */
 export function formatOf(path: string): FontFormat | null {
-  const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
+  // The extension must come from the final path segment: a folder name containing a
+  // dot (e.g. "my.fonts/plain") must not make an extensionless filename look like it
+  // has one.
+  const file = path.slice(path.lastIndexOf('/') + 1);
+  const dot = file.lastIndexOf('.');
+  if (dot === -1) {
+    return null;
+  }
+  const ext = file.slice(dot + 1).toLowerCase();
   return FORMATS[ext] ?? null;
 }
 

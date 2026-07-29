@@ -215,14 +215,25 @@ function align4(n: number): number {
  * be tag-sorted, and since this list is fixed, that order needs no runtime sort.
  */
 const REASSEMBLY_TAG_ORDER = ['OS/2', 'cmap', 'fvar', 'name'] as const;
-const REASSEMBLY_TAGS = new Set<string>(REASSEMBLY_TAG_ORDER);
+
+/**
+ * Tables worth reassembling out of a compressed container — see the docstring above
+ * {@link REASSEMBLY_TAG_ORDER}. Exported so metadata.ts's WOFF1 decoder reassembles the
+ * same four tables as WOFF2 does here, rather than picking its own (possibly
+ * inconsistent) set.
+ */
+export const REASSEMBLY_TAGS: ReadonlySet<string> = new Set<string>(REASSEMBLY_TAG_ORDER);
 
 /**
  * Build a minimal, valid sfnt containing only the reassembled tables present
  * (already-decompressed bytes). Checksums are left as 0 — nothing in this codebase's
  * sfnt reader verifies them (see `readTableDirectory` in sfnt.ts).
+ *
+ * Exported so metadata.ts can reuse it for WOFF1 reassembly (`decodeWoff1`) rather than
+ * duplicating this sfnt-building logic — WOFF1 and WOFF2 both reduce to "here are some
+ * decompressed table bodies, wrap them in a valid sfnt directory".
  */
-function buildMinimalSfnt(tables: Map<string, Uint8Array>): ArrayBuffer {
+export function buildMinimalSfnt(tables: Map<string, Uint8Array>): ArrayBuffer {
   const ordered = REASSEMBLY_TAG_ORDER.flatMap((tag) => {
     const bytes = tables.get(tag);
     return bytes === undefined ? [] : [{ tag, bytes }];

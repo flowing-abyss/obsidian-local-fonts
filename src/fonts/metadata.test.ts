@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFixture } from './fixtures.js';
 import { extractMetadata } from './metadata.js';
+import { parseSfnt } from './sfnt.js';
 
 function fixtureReader(map: Record<string, ArrayBuffer>) {
   return async (p: string): Promise<ArrayBuffer> => {
@@ -32,6 +33,90 @@ async function deflate(buf: ArrayBuffer): Promise<ArrayBuffer> {
     },
   }).pipeThrough(new CompressionStream('deflate'));
   return new Response(stream).arrayBuffer();
+}
+
+/**
+ * A minimal sfnt `name` table with a single family (nameId 1) record, platform 3
+ * (Windows), encoded UTF-16BE per spec. `family` must be ASCII (fixture names are).
+ */
+function buildNameTable(family: string): Uint8Array {
+  const text = new Uint8Array(family.length * 2);
+  for (let i = 0; i < family.length; i++) {
+    text[i * 2] = 0;
+    text[i * 2 + 1] = family.charCodeAt(i);
+  }
+  const stringOffset = 6 + 12;
+  const buf = new Uint8Array(stringOffset + text.byteLength);
+  const view = new DataView(buf.buffer);
+  view.setUint16(0, 0); // format
+  view.setUint16(2, 1); // count
+  view.setUint16(4, stringOffset);
+  view.setUint16(6, 3); // platformID: Windows
+  view.setUint16(8, 1); // encodingID
+  view.setUint16(10, 0x0409); // languageID
+  view.setUint16(12, 1); // nameID: family
+  view.setUint16(14, text.byteLength);
+  view.setUint16(16, 0); // offset within string storage
+  buf.set(text, stringOffset);
+  return buf;
+}
+
+interface Woff1TableSpec {
+  body: Uint8Array;
+  compress?: boolean;
+  /** Lie in the directory's compLength field without changing what's actually written — simulates a corrupt/truncated entry. */
+  compLengthOverride?: number;
+}
+
+/**
+ * Build a genuine WOFF1 container (44-byte header + 20-byte-per-table directory) around
+ * the given table bodies, used to test decodeWoff1 against the real format rather than
+ * the whole-file-deflate shortcut a naive implementation might take. Each table is
+ * stored either raw (compLength === origLength, the common case for small tables) or
+ * zlib-deflate compressed, exercising both branches the real spec allows.
+ * `numTablesOverride` lets a caller claim more tables than are actually written, to
+ * simulate a truncated directory.
+ */
+async function buildWoff1(
+  tables: Record<string, Woff1TableSpec>,
+  numTablesOverride?: number,
+): Promise<ArrayBuffer> {
+  const prepared = await Promise.all(
+    Object.entries(tables).map(async ([tag, { body, compress, compLengthOverride }]) => {
+      const stored = compress === true ? new Uint8Array(await deflate(body.slice().buffer)) : body;
+      return { tag, stored, origLength: body.byteLength, compLengthOverride };
+    }),
+  );
+
+  const headerSize = 44;
+  const dirSize = prepared.length * 20;
+  let offset = headerSize + dirSize;
+  const placed = prepared.map((t) => {
+    const entry = { ...t, offset };
+    offset += t.stored.byteLength;
+    return entry;
+  });
+
+  const out = new Uint8Array(offset);
+  const view = new DataView(out.buffer);
+  view.setUint32(0, 0x774f_4646); // 'wOFF'
+  view.setUint32(4, 0x0001_0000); // flavor
+  view.setUint32(8, offset); // length
+  view.setUint16(12, numTablesOverride ?? placed.length); // numTables
+
+  placed.forEach((table, index) => {
+    const base = headerSize + index * 20;
+    for (let c = 0; c < 4; c++) {
+      view.setUint8(base + c, table.tag.charCodeAt(c));
+    }
+    view.setUint32(base + 4, table.offset);
+    view.setUint32(base + 8, table.compLengthOverride ?? table.stored.byteLength); // compLength
+    view.setUint32(base + 12, table.origLength);
+    view.setUint32(base + 16, 0); // origChecksum, unverified by this codebase's reader
+    out.set(table.stored, table.offset);
+  });
+
+  return out.buffer;
 }
 
 describe('extractMetadata', () => {
@@ -110,6 +195,30 @@ describe('extractMetadata', () => {
     expect(record.family).toBe('Some Font');
   });
 
+  it('reads the name table from a real woff2 with no sibling available (level 3, pinned)', async () => {
+    // With siblings: [], a passing 'source: name-table' result can ONLY come from a
+    // genuine decodeWoff2 -> parseSfnt round trip: there is no fallback path that could
+    // produce this family. This is the test that would fail if the wiring between
+    // metadata.ts and decodeWoff2 broke, which neither of the other woff2 tests would
+    // catch (one tolerates a sibling fallback, the other only checks colorFormats).
+    const ttfInfo = parseSfnt(readFixture('probe-sans/probe-sans-400.ttf'));
+
+    const record = await extractMetadata({
+      path: '.fonts/probe-sans/probe-sans-400.woff2',
+      size: 100,
+      mtime: 1,
+      siblings: [],
+      read: fixtureReader({
+        '.fonts/probe-sans/probe-sans-400.woff2': readFixture('probe-sans/probe-sans-400.woff2'),
+      }),
+    });
+
+    expect(record.source).toBe('name-table');
+    expect(record.family).toBe('Probe Sans');
+    expect(record.scripts.length).toBeGreaterThan(0);
+    expect(record.scripts).toStrictEqual(ttfInfo.scripts);
+  });
+
   it('always reports colour formats for a woff2, even without a decoder', async () => {
     const record = await extractMetadata({
       path: '.fonts/probe-sans/probe-sans-400.woff2',
@@ -169,9 +278,9 @@ describe('extractMetadata', () => {
     expect(record.colorFormats).toStrictEqual([]);
   });
 
-  it('falls back to the filename when a woff buffer is not valid deflate', async () => {
-    // Exercises inflateWoff's own catch: DecompressionStream rejects on bytes that
-    // aren't a valid deflate stream, and that rejection must not escape extractMetadata.
+  it('falls back to the filename when a woff buffer has no wOFF signature', async () => {
+    // Exercises decodeWoff1's own catch: a buffer that is too short/wrong-signature to
+    // even be a WOFF1 header must not escape extractMetadata as a thrown error.
     const record = await extractMetadata({
       path: '.fonts/y/z-400.woff',
       size: 1,
@@ -184,6 +293,67 @@ describe('extractMetadata', () => {
 
     expect(record.source).toBe('filename');
     expect(record.family).toBe('Z');
+  });
+
+  it('falls back to the filename when a WOFF1 directory is truncated', async () => {
+    // The header claims 5 tables but the buffer ends right after the header, with no
+    // room for even one directory entry. readWoff1Directory must stop at the buffer's
+    // edge instead of reading past it, yielding no usable tables.
+    const truncated = await buildWoff1({}, 5);
+
+    const record = await extractMetadata({
+      path: '.fonts/truncated/truncated-400.woff',
+      size: 100,
+      mtime: 1,
+      siblings: [],
+      read: fixtureReader({ '.fonts/truncated/truncated-400.woff': truncated }),
+    });
+
+    expect(record.source).toBe('filename');
+    expect(record.family).toBe('Truncated');
+  });
+
+  it('skips a WOFF1 table entry whose recorded length runs past the end of the buffer', async () => {
+    // A corrupt or malicious directory entry can claim a compLength that would read
+    // past the file's actual size; inflateWoff1Table must bounds-check this the same
+    // way sfnt.ts's tableView does, and decodeWoff1 must treat it as "no usable table"
+    // rather than throwing on an out-of-range read.
+    const corrupt = await buildWoff1({
+      name: { body: new Uint8Array(8), compLengthOverride: 999_999 },
+    });
+
+    const record = await extractMetadata({
+      path: '.fonts/corrupt/corrupt-400.woff',
+      size: 100,
+      mtime: 1,
+      siblings: [],
+      read: fixtureReader({ '.fonts/corrupt/corrupt-400.woff': corrupt }),
+    });
+
+    expect(record.source).toBe('filename');
+    expect(record.family).toBe('Corrupt');
+  });
+
+  it('skips a WOFF1 table entry whose compressed bytes are not valid deflate', async () => {
+    // Distinct from the bounds-violation test above: this entry is fully in-bounds and
+    // genuinely marked as compressed (compLength !== origLength), but the bytes it
+    // points at are not a valid deflate stream. DecompressionStream rejects, and that
+    // per-table failure must not propagate past decodeWoff1.
+    const garbage = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+    const badDeflate = await buildWoff1({
+      name: { body: garbage, compLengthOverride: garbage.byteLength - 1 },
+    });
+
+    const record = await extractMetadata({
+      path: '.fonts/bad-deflate/bad-deflate-400.woff',
+      size: 100,
+      mtime: 1,
+      siblings: [],
+      read: fixtureReader({ '.fonts/bad-deflate/bad-deflate-400.woff': badDeflate }),
+    });
+
+    expect(record.source).toBe('filename');
+    expect(record.family).toBe('Bad Deflate');
   });
 
   it('ignores the file itself when scanning for a sibling', async () => {
@@ -208,12 +378,13 @@ describe('extractMetadata', () => {
     expect(record.family).toBe('Probe Sans');
   });
 
-  it('reads a woff via DecompressionStream deflate (level 2)', async () => {
-    // There is no checked-in .woff fixture, so this test builds one: it deflates a
-    // known-good ttf fixture's raw bytes and feeds the compressed bytes back in as the
-    // "file", matching what inflateWoff actually does (whole-buffer deflate, no WOFF1
-    // table-directory parsing).
-    const compressed = await deflate(readFixture('probe-sans/probe-sans-400.ttf'));
+  it('reads a real WOFF1 fixture end to end (level 2)', async () => {
+    // probe-sans-400.woff is a genuine WOFF1 file built by fontTools from the same
+    // source as probe-sans-400.ttf (see scripts/make-fixtures.py): 44-byte header, a
+    // real table directory, and a mix of zlib-deflated tables (OS/2, cmap, name are
+    // all compressed in this fixture) and raw-stored ones (head, loca). Ground truth
+    // comes from parsing the sibling ttf directly, not from a hardcoded expectation.
+    const ttfInfo = parseSfnt(readFixture('probe-sans/probe-sans-400.ttf'));
 
     const record = await extractMetadata({
       path: '.fonts/probe-sans/probe-sans-400.woff',
@@ -221,13 +392,36 @@ describe('extractMetadata', () => {
       mtime: 1,
       siblings: [],
       read: fixtureReader({
-        '.fonts/probe-sans/probe-sans-400.woff': compressed,
+        '.fonts/probe-sans/probe-sans-400.woff': readFixture('probe-sans/probe-sans-400.woff'),
       }),
     });
 
     expect(record.source).toBe('name-table');
-    expect(record.family).toBe('Probe Sans');
     expect(record.format).toBe('woff');
+    expect(record.family).toBe(ttfInfo.family);
+    expect(record.weight).toBe(ttfInfo.weight);
+    expect(record.scripts.length).toBeGreaterThan(0);
+    expect(record.scripts).toStrictEqual(ttfInfo.scripts);
+  });
+
+  it('reads a raw-stored (uncompressed) table from a synthetic WOFF1', async () => {
+    // The real fixture above happens to store all four reassembly-worthy tables
+    // (OS/2/cmap/fvar/name) compressed; WOFF1 also allows storing a table raw when
+    // compLength === origLength, which is common for small tables. This pins that
+    // branch down directly with a hand-built container.
+    const nameTable = buildNameTable('Synthetic Family');
+    const woff1 = await buildWoff1({ name: { body: nameTable } });
+
+    const record = await extractMetadata({
+      path: '.fonts/synthetic/synthetic-400.woff',
+      size: 100,
+      mtime: 1,
+      siblings: [],
+      read: fixtureReader({ '.fonts/synthetic/synthetic-400.woff': woff1 }),
+    });
+
+    expect(record.source).toBe('name-table');
+    expect(record.family).toBe('Synthetic Family');
   });
 
   it('skips a non-matching sibling candidate instead of stopping at it', async () => {
@@ -294,10 +488,11 @@ describe('extractMetadata', () => {
   });
 
   it('falls through level 2 when a woff decodes but carries no usable family', async () => {
-    // Distinct from the "not valid deflate" test: here inflateWoff succeeds and
-    // parseSfnt does not throw, but the decoded sfnt has no name table, so
+    // Distinct from the "no wOFF signature" test: here decodeWoff1 succeeds (a
+    // genuine WOFF1 container, reassembled to a valid sfnt) and parseSfnt does not
+    // throw, but the only table present is OS/2 — no `name` table at all — so
     // readSfntInfo's own family check must reject it and fall through to the sibling.
-    const compressed = await deflate(emptySfnt());
+    const woff1 = await buildWoff1({ 'OS/2': { body: new Uint8Array(4) } });
 
     const record = await extractMetadata({
       path: '.fonts/empty2/empty2-400.woff',
@@ -305,7 +500,7 @@ describe('extractMetadata', () => {
       mtime: 1,
       siblings: ['.fonts/empty2/empty2-400.ttf'],
       read: fixtureReader({
-        '.fonts/empty2/empty2-400.woff': compressed,
+        '.fonts/empty2/empty2-400.woff': woff1,
         '.fonts/empty2/empty2-400.ttf': readFixture('probe-sans/probe-sans-400.ttf'),
       }),
     });
