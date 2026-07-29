@@ -1,24 +1,25 @@
 import type { PluginManifest } from 'obsidian';
 import { App } from 'obsidian-test-mocks/obsidian';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import ExamplePlugin from './main.js';
+import LocalFontsPlugin from './main.js';
+import { DEFAULT_SETTINGS } from './settings.js';
 
 const manifest: PluginManifest = {
-  id: 'your-id-here',
-  name: 'Your Title Here',
+  id: 'local-fonts',
+  name: 'Local Fonts',
   author: 'test',
   version: '0.0.0-test',
   minAppVersion: '1.0.3',
   description: 'Test manifest',
 };
 
-function createPlugin(): ExamplePlugin {
+function createPlugin(): LocalFontsPlugin {
   const app = App.createConfigured__();
-  return new ExamplePlugin(app.asOriginalType__(), manifest);
+  return new LocalFontsPlugin(app.asOriginalType__(), manifest);
 }
 
-describe('ExamplePlugin', () => {
-  let plugin: ExamplePlugin;
+describe('LocalFontsPlugin', () => {
+  let plugin: LocalFontsPlugin;
 
   beforeEach(() => {
     plugin = createPlugin();
@@ -27,15 +28,16 @@ describe('ExamplePlugin', () => {
   it('falls back to the defaults when nothing was saved', async () => {
     await plugin.onload();
 
-    expect(plugin.settings).toStrictEqual({ enabled: true });
+    expect(plugin.settings).toStrictEqual(DEFAULT_SETTINGS);
   });
 
   it('merges saved settings over the defaults', async () => {
-    vi.spyOn(plugin, 'loadData').mockResolvedValue({ enabled: false });
+    vi.spyOn(plugin, 'loadData').mockResolvedValue({ hardOverride: true });
 
     await plugin.onload();
 
-    expect(plugin.settings).toStrictEqual({ enabled: false });
+    expect(plugin.settings.hardOverride).toBe(true);
+    expect(plugin.settings.folder).toBe('.fonts');
   });
 
   it('persists the current settings via saveSettings', async () => {

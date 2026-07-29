@@ -2,7 +2,7 @@ import { Plugin } from 'obsidian';
 import { DEFAULT_SETTINGS, type PluginSettings } from './settings.js';
 import { mergeSettings } from './utils/merge-settings.js';
 
-export default class ExamplePlugin extends Plugin {
+export default class LocalFontsPlugin extends Plugin {
   override settings!: PluginSettings;
 
   override async onload(): Promise<void> {

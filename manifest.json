@@ -1,9 +1,11 @@
 {
-  "id": "your-id-here",
-  "name": "Your Title Here",
+  "id": "local-fonts",
+  "name": "Local Fonts",
   "version": "0.1.2",
   "minAppVersion": "1.0.3",
-  "description": "Describe what this does in one sentence.",
-  "author": "Your Name",
+  "description": "Load fonts from a folder in your vault and apply them to text, interface, headings, code and emoji.",
+  "author": "flowing-abyss",
+  "authorUrl": "https://github.com/flowing-abyss",
+  "fundingUrl": "https://boosty.to/flowing-abyss/donate",
   "isDesktopOnly": false
 }
