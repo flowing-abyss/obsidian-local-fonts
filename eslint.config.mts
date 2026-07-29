@@ -186,5 +186,19 @@ export default defineConfig(
       'obsidianmd/no-forbidden-elements': 'off',
     },
   },
+  {
+    // probe.ts measures which font actually rendered by comparing pixel widths, which only
+    // works if the probe element's styles are exactly what the code sets and nothing else —
+    // a CSS class in styles.css could be overridden by a theme (or by the plugin's own
+    // generated font-role CSS) and silently corrupt the measurement. So static inline styles
+    // are the correct tool here, not a workaround. The module also takes a plain `Document`
+    // (per its public API, so it works with any document, in-app or under test) rather than
+    // an Obsidian `App`/`WorkspaceWindow`, so `doc.win.createSpan()` isn't available either.
+    files: ['src/fonts/probe.ts'],
+    rules: {
+      'obsidianmd/no-static-styles-assignment': 'off',
+      'obsidianmd/prefer-create-el': 'off',
+    },
+  },
   prettier,
 );
