@@ -150,9 +150,8 @@ describe('LocalFontsSettingTab', () => {
     const card = tab.containerEl.querySelector('.local-fonts-family');
     expect(card?.querySelector('.local-fonts-warning')).toBeNull();
     expect(card?.querySelector('.local-fonts-faces li')?.textContent).toContain('italic');
-    expect(card?.querySelector('.local-fonts-faces li')?.textContent).toContain(
-      'selected on this platform',
-    );
+    expect(card?.querySelector('.local-fonts-face-colour')?.textContent).toContain('supported');
+    expect(card?.querySelector('.local-fonts-face-verdict')?.textContent).toContain('selected');
   });
 
   it('reports a missing regular weight and formats a large file in MB', () => {
@@ -184,7 +183,7 @@ describe('LocalFontsSettingTab', () => {
     expect(card?.querySelector('.local-fonts-faces li')?.textContent).toContain('2.0 MB');
   });
 
-  it('shows which extraction level supplied the data, so guesses are visible', () => {
+  it('marks a guessed value as guessed, distinctly from a parsed one', () => {
     plugin.settings.cache = {
       version: 1,
       folder: '.fonts',
@@ -208,11 +207,12 @@ describe('LocalFontsSettingTab', () => {
 
     tab.display();
 
-    const card = tab.containerEl.querySelector('.local-fonts-family');
-    expect(card?.querySelector('.local-fonts-source')?.textContent).toContain('filename');
+    const source = tab.containerEl.querySelector('.local-fonts-face-source');
+    expect(source?.textContent).toContain('guessed from filename');
+    expect(source?.classList.contains('local-fonts-face-source-guessed')).toBe(true);
   });
 
-  it('lists every distinct extraction level when faces of a family disagree, in a stable order', () => {
+  it('attaches the metadata source per face, so a mixed family does not hide which face was guessed', () => {
     plugin.settings.cache = {
       version: 1,
       folder: '.fonts',
@@ -250,10 +250,271 @@ describe('LocalFontsSettingTab', () => {
 
     tab.display();
 
-    const card = tab.containerEl.querySelector('.local-fonts-family');
-    expect(card?.querySelector('.local-fonts-source')?.textContent).toBe(
-      'Metadata from: filename, name-table',
+    const rows = tab.containerEl.querySelectorAll('.local-fonts-faces li');
+    expect(rows[0]?.querySelector('.local-fonts-face-source')?.textContent).toContain(
+      'guessed from filename',
     );
+    expect(
+      rows[0]
+        ?.querySelector('.local-fonts-face-source')
+        ?.classList.contains('local-fonts-face-source-guessed'),
+    ).toBe(true);
+    expect(rows[1]?.querySelector('.local-fonts-face-source')?.textContent).toContain(
+      'parsed from name-table',
+    );
+    expect(
+      rows[1]
+        ?.querySelector('.local-fonts-face-source')
+        ?.classList.contains('local-fonts-face-source-guessed'),
+    ).toBe(false);
+  });
+
+  it('renders non-empty variable axes with tag, range and default', () => {
+    plugin.settings.cache = {
+      version: 1,
+      folder: '.fonts',
+      faces: [
+        {
+          path: '.fonts/a-var.woff2',
+          format: 'woff2',
+          size: 1,
+          mtime: 1,
+          family: 'Probe Variable',
+          weight: 400,
+          italic: false,
+          colorFormats: [],
+          scripts: [],
+          axes: [{ tag: 'wght', min: 100, max: 900, default: 400 }],
+          license: null,
+          source: 'name-table',
+        },
+      ],
+    };
+
+    tab.display();
+
+    const axes = tab.containerEl.querySelector('.local-fonts-face-axes');
+    expect(axes?.textContent).toContain('wght 100–900 (default 400)');
+  });
+
+  it('omits the axes element entirely for a static face', () => {
+    plugin.settings.cache = {
+      version: 1,
+      folder: '.fonts',
+      faces: [
+        {
+          path: '.fonts/a-static.woff2',
+          format: 'woff2',
+          size: 1,
+          mtime: 1,
+          family: 'Probe Static',
+          weight: 400,
+          italic: false,
+          colorFormats: [],
+          scripts: [],
+          axes: [],
+          license: null,
+          source: 'name-table',
+        },
+      ],
+    };
+
+    tab.display();
+
+    expect(tab.containerEl.querySelector('.local-fonts-face-axes')).toBeNull();
+  });
+
+  it('gives the winner a reason and the loser a matching one, for genuinely competing faces', () => {
+    plugin.settings.cache = {
+      version: 1,
+      folder: '.fonts',
+      faces: [
+        {
+          path: '.fonts/a.ttf',
+          format: 'ttf',
+          size: 100,
+          mtime: 1,
+          family: 'Probe Sans',
+          weight: 400,
+          italic: false,
+          colorFormats: [],
+          scripts: [],
+          axes: [],
+          license: null,
+          source: 'name-table',
+        },
+        {
+          path: '.fonts/a.woff2',
+          format: 'woff2',
+          size: 100,
+          mtime: 1,
+          family: 'Probe Sans',
+          weight: 400,
+          italic: false,
+          colorFormats: [],
+          scripts: [],
+          axes: [],
+          license: null,
+          source: 'name-table',
+        },
+      ],
+    };
+
+    tab.display();
+
+    const rows = tab.containerEl.querySelectorAll('.local-fonts-faces li');
+    // Faces are rendered in scan order (ttf, then woff2); woff2 wins on format rank.
+    expect(rows[0]?.querySelector('.local-fonts-face-verdict')?.textContent).toBe(
+      ' — not selected (preferred format)',
+    );
+    expect(rows[1]?.querySelector('.local-fonts-face-verdict')?.textContent).toBe(
+      ' — selected (preferred format)',
+    );
+  });
+
+  it('gives a "smaller file" reason when two competing faces share a format', () => {
+    plugin.settings.cache = {
+      version: 1,
+      folder: '.fonts',
+      faces: [
+        {
+          path: '.fonts/a-big.woff2',
+          format: 'woff2',
+          size: 2000,
+          mtime: 1,
+          family: 'Probe Sans',
+          weight: 400,
+          italic: false,
+          colorFormats: [],
+          scripts: [],
+          axes: [],
+          license: null,
+          source: 'name-table',
+        },
+        {
+          path: '.fonts/a-small.woff2',
+          format: 'woff2',
+          size: 1000,
+          mtime: 1,
+          family: 'Probe Sans',
+          weight: 400,
+          italic: false,
+          colorFormats: [],
+          scripts: [],
+          axes: [],
+          license: null,
+          source: 'name-table',
+        },
+      ],
+    };
+
+    tab.display();
+
+    const rows = tab.containerEl.querySelectorAll('.local-fonts-faces li');
+    expect(rows[0]?.querySelector('.local-fonts-face-verdict')?.textContent).toBe(
+      ' — not selected (smaller file)',
+    );
+    expect(rows[1]?.querySelector('.local-fonts-face-verdict')?.textContent).toBe(
+      ' — selected (smaller file)',
+    );
+  });
+
+  it('gives a "tie-break" reason when format and size are both tied', () => {
+    plugin.settings.cache = {
+      version: 1,
+      folder: '.fonts',
+      faces: [
+        {
+          path: '.fonts/zzz.woff2',
+          format: 'woff2',
+          size: 500,
+          mtime: 1,
+          family: 'Probe Sans',
+          weight: 400,
+          italic: false,
+          colorFormats: [],
+          scripts: [],
+          axes: [],
+          license: null,
+          source: 'name-table',
+        },
+        {
+          path: '.fonts/aaa.woff2',
+          format: 'woff2',
+          size: 500,
+          mtime: 1,
+          family: 'Probe Sans',
+          weight: 400,
+          italic: false,
+          colorFormats: [],
+          scripts: [],
+          axes: [],
+          license: null,
+          source: 'name-table',
+        },
+      ],
+    };
+
+    tab.display();
+
+    const rows = tab.containerEl.querySelectorAll('.local-fonts-faces li');
+    expect(rows[0]?.querySelector('.local-fonts-face-verdict')?.textContent).toBe(
+      ' — not selected (tie-break)',
+    );
+    expect(rows[1]?.querySelector('.local-fonts-face-verdict')?.textContent).toBe(
+      ' — selected (tie-break)',
+    );
+  });
+
+  it('shows a per-face unsupported-colour verdict even when the family has a usable face', () => {
+    plugin.settings.cache = {
+      version: 1,
+      folder: '.fonts',
+      faces: [
+        {
+          path: '.fonts/emoji.woff2',
+          format: 'woff2',
+          size: 100,
+          mtime: 1,
+          family: 'Probe Emoji',
+          weight: 400,
+          italic: false,
+          colorFormats: ['SVG'],
+          scripts: ['emoji'],
+          axes: [],
+          license: null,
+          source: 'name-table',
+        },
+        {
+          path: '.fonts/emoji.ttf',
+          format: 'ttf',
+          size: 200,
+          mtime: 1,
+          family: 'Probe Emoji',
+          weight: 400,
+          italic: false,
+          colorFormats: ['SVG', 'COLR1'],
+          scripts: ['emoji'],
+          axes: [],
+          license: null,
+          source: 'name-table',
+        },
+      ],
+    };
+
+    tab.display();
+
+    // The family as a whole is fine (the ttf can render), so no family-level warning —
+    // but the woff2 face specifically cannot draw its colour format on Chromium, and
+    // that must still be visible per-face.
+    const card = tab.containerEl.querySelector('.local-fonts-family');
+    expect(card?.querySelector('.local-fonts-warning')).toBeNull();
+    const rows = tab.containerEl.querySelectorAll('.local-fonts-faces li');
+    expect(rows[0]?.querySelector('.local-fonts-face-colour')?.textContent).toContain(
+      'unsupported',
+    );
+    expect(rows[1]?.querySelector('.local-fonts-face-colour')?.textContent).toContain('supported');
+    expect(rows[1]?.querySelector('.local-fonts-face-verdict')?.textContent).toContain('selected');
   });
 
   it('surfaces a file the scanner had to skip', () => {

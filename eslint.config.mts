@@ -216,14 +216,17 @@ export default defineConfig(
     },
   },
   {
-    // `display()` was marked deprecated in Obsidian 1.13.0 in favour of a declarative
-    // `getSettingDefinitions()` API, but that API describes simple name/desc/control
-    // rows — it has no way to express this file's diagnostics section (a variable
-    // number of collapsible per-family cards, each with its own selected-face list,
-    // script coverage and licence text, built from the current scan). `display()` is
-    // still fully supported at runtime and is the only API that can render that.
-    // manifest.json's minAppVersion (1.0.3) predates the declarative API entirely.
-    // Applies to the test file too, since it calls `tab.display()` directly.
+    // `display()` is deprecated since Obsidian 1.13.0 in favour of a declarative
+    // `getSettingDefinitions()` API, but it remains required here: manifest.json's
+    // minAppVersion is 1.0.3, and Obsidian's own JSDoc on `display()` says to keep it
+    // as the fallback for versions before 1.13. `getSettingDefinitions()` could express
+    // this file's seven controls, and — via `SettingDefinitionRender`'s
+    // `render: (setting, group) => void | (() => void)`, plus `SettingDefinitionList`
+    // for variable-length entries — could host the diagnostics section too; it is not
+    // being adopted now only because `display()` has to stay regardless of which API
+    // renders the controls. Revisit this override (and consider migrating) once
+    // minAppVersion rises to 1.13.0. Applies to the test file too, since it calls
+    // `tab.display()` directly.
     files: ['src/settings-tab.ts', 'src/settings-tab.test.ts'],
     rules: {
       '@typescript-eslint/no-deprecated': 'off',

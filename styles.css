@@ -25,6 +25,15 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
 
 .local-fonts-licence,
 .local-fonts-empty,
-.local-fonts-source {
+.local-fonts-face-colour,
+.local-fonts-face-axes,
+.local-fonts-face-verdict,
+.local-fonts-face-source {
   color: var(--text-muted);
+}
+
+/* A value guessed from the filename must never look like one parsed from the font. */
+.local-fonts-face-source-guessed {
+  color: var(--text-error);
+  font-style: italic;
 }

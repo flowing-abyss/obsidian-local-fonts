@@ -1,8 +1,8 @@
 import { Platform, PluginSettingTab, Setting, type App } from 'obsidian';
-import { canRender, type Engine } from './fonts/platform.js';
+import { type Engine } from './fonts/platform.js';
 import { isFamilyApplied } from './fonts/probe.js';
-import { selectFaces } from './fonts/select.js';
-import type { FaceRecord } from './fonts/types.js';
+import { explainSelection, type FaceVerdict, type SelectionReason } from './fonts/select.js';
+import type { FaceRecord, VariableAxis } from './fonts/types.js';
 import type LocalFontsPlugin from './main.js';
 import type { RoleName } from './settings.js';
 
@@ -41,15 +41,23 @@ export class LocalFontsSettingTab extends PluginSettingTab {
     this.renderDiagnostics(families, engine);
   }
 
+  /** Every one of the seven controls goes through here, so the class that keeps the
+   *  "exactly seven controls" test meaningful is applied in exactly one place. */
+  private newControl(name: string, desc: string): Setting {
+    return (
+      new Setting(this.containerEl)
+        // Real Obsidian's Setting always carries this class on settingEl; the test mock
+        // does not add it, so it's set explicitly here (harmless duplicate in-app) to keep
+        // the "seven controls" test discriminating on genuine DOM structure.
+        .setClass('setting-item')
+        .setName(name)
+        .setDesc(desc)
+    );
+  }
+
   private renderFolder(): void {
-    new Setting(this.containerEl)
-      // Real Obsidian's Setting always carries this class on settingEl; the test mock
-      // does not add it, so it's set explicitly here (harmless duplicate in-app) to keep
-      // the "seven controls" test discriminating on genuine DOM structure.
-      .setClass('setting-item')
-      .setName('Fonts folder')
-      .setDesc('Vault-relative. May be hidden, for example .fonts')
-      .addText((text) => {
+    this.newControl('Fonts folder', 'Vault-relative. May be hidden, for example .fonts').addText(
+      (text) => {
         text.setValue(this.plugin.settings.folder);
         // onChange fires per keystroke; committing there would re-walk the whole folder
         // once per character typed. Blur fires once, when the user is done editing, and
@@ -61,7 +69,8 @@ export class LocalFontsSettingTab extends PluginSettingTab {
             console.error('[local-fonts] failed to apply the new fonts folder', error);
           });
         });
-      });
+      },
+    );
   }
 
   private async commitFolderChange(folder: string): Promise<void> {
@@ -76,19 +85,15 @@ export class LocalFontsSettingTab extends PluginSettingTab {
 
   private renderRoles(familyNames: readonly string[]): void {
     for (const [role, name, desc] of ROLES) {
-      new Setting(this.containerEl)
-        .setClass('setting-item')
-        .setName(name)
-        .setDesc(desc)
-        .addDropdown((dropdown) => {
-          dropdown.addOption(NONE, 'Leave the theme alone');
-          for (const family of familyNames) {
-            dropdown.addOption(family, family);
-          }
-          dropdown
-            .setValue(this.plugin.settings.roles[role] ?? NONE)
-            .onChange(this.commitRoleChange.bind(this, role));
-        });
+      this.newControl(name, desc).addDropdown((dropdown) => {
+        dropdown.addOption(NONE, 'Leave the theme alone');
+        for (const family of familyNames) {
+          dropdown.addOption(family, family);
+        }
+        dropdown
+          .setValue(this.plugin.settings.roles[role] ?? NONE)
+          .onChange(this.commitRoleChange.bind(this, role));
+      });
     }
   }
 
@@ -99,15 +104,14 @@ export class LocalFontsSettingTab extends PluginSettingTab {
   }
 
   private renderHardOverride(): void {
-    new Setting(this.containerEl)
-      .setClass('setting-item')
-      .setName('Hard override')
-      .setDesc('Force fonts onto themes that set font-family directly. Icons are left alone.')
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.hardOverride)
-          .onChange(this.commitHardOverride.bind(this)),
-      );
+    this.newControl(
+      'Hard override',
+      'Force fonts onto themes that set font-family directly. Icons are left alone.',
+    ).addToggle((toggle) =>
+      toggle
+        .setValue(this.plugin.settings.hardOverride)
+        .onChange(this.commitHardOverride.bind(this)),
+    );
   }
 
   private async commitHardOverride(value: boolean): Promise<void> {
@@ -159,7 +163,8 @@ export class LocalFontsSettingTab extends PluginSettingTab {
     const card = parent.createEl('details', { cls: 'local-fonts-family' });
     card.createEl('summary', { cls: 'local-fonts-family-name', text: family });
 
-    const usable = faces.filter((face) => canRender(engine, face.colorFormats));
+    const verdicts = explainSelection(faces, engine);
+    const usable = faces.filter((face) => verdicts.get(face.path)?.status !== 'unrenderable');
     if (usable.length === 0) {
       card.createEl('p', {
         cls: 'local-fonts-warning',
@@ -176,22 +181,11 @@ export class LocalFontsSettingTab extends PluginSettingTab {
       text: scripts.length > 0 ? `Scripts: ${scripts.join(', ')}` : 'Scripts: unknown',
     });
 
-    const sources = [...new Set(faces.map((face) => face.source))].sort((a, b) =>
-      a.localeCompare(b),
-    );
-    card.createEl('p', {
-      cls: 'local-fonts-source',
-      text: `Metadata from: ${sources.join(', ')}`,
-    });
-
-    const chosen = new Set(selectFaces(faces, engine).map((face) => face.path));
     const list = card.createEl('ul', { cls: 'local-fonts-faces' });
     for (const face of faces) {
-      const colours = face.colorFormats.length > 0 ? ` [${face.colorFormats.join(', ')}]` : '';
-      const mark = chosen.has(face.path) ? ' — selected on this platform' : '';
-      list.createEl('li', {
-        text: `${String(face.weight)}${face.italic ? ' italic' : ''} · ${face.format} · ${formatSize(face.size)}${colours}${mark}`,
-      });
+      // Always present: `verdicts` was built from this exact `faces` array.
+      const verdict = verdicts.get(face.path) ?? { status: 'unrenderable' as const };
+      renderFaceRow(list, face, verdict);
     }
 
     const licence = faces.find((face) => face.license !== null)?.license ?? null;
@@ -238,4 +232,80 @@ function formatSize(bytes: number): string {
   return bytes >= 1024 * 1024
     ? `${(bytes / 1024 / 1024).toFixed(1)} MB`
     : `${Math.max(1, Math.round(bytes / 1024)).toString()} KB`;
+}
+
+function describeReason(reason: SelectionReason): string {
+  switch (reason) {
+    case 'format':
+      return 'preferred format';
+    case 'size':
+      return 'smaller file';
+    case 'tie-break':
+      return 'tie-break';
+  }
+}
+
+function describeAxes(axes: readonly VariableAxis[]): string {
+  return axes
+    .map(
+      (axis) =>
+        `${axis.tag} ${String(axis.min)}–${String(axis.max)} (default ${String(axis.default)})`,
+    )
+    .join(', ');
+}
+
+function renderFaceColour(li: HTMLElement, face: FaceRecord, verdict: FaceVerdict): void {
+  if (face.colorFormats.length === 0) {
+    return;
+  }
+  const supported = verdict.status !== 'unrenderable';
+  li.createSpan({
+    cls: 'local-fonts-face-colour',
+    text: ` · [${face.colorFormats.join(', ')}] — ${supported ? 'supported' : 'unsupported'} on this engine`,
+  });
+}
+
+function renderFaceAxes(li: HTMLElement, face: FaceRecord): void {
+  if (face.axes.length === 0) {
+    return;
+  }
+  li.createSpan({ cls: 'local-fonts-face-axes', text: ` · Axes: ${describeAxes(face.axes)}` });
+}
+
+function renderFaceVerdict(li: HTMLElement, verdict: FaceVerdict): void {
+  if (verdict.status === 'unrenderable') {
+    return;
+  }
+  const detail = verdict.reason === null ? '' : ` (${describeReason(verdict.reason)})`;
+  li.createSpan({
+    cls: 'local-fonts-face-verdict',
+    text: verdict.status === 'selected' ? ` — selected${detail}` : ` — not selected${detail}`,
+  });
+}
+
+function renderFaceSource(li: HTMLElement, face: FaceRecord): void {
+  const guessed = face.source === 'filename';
+  const description = guessed ? 'guessed from filename' : `parsed from ${face.source}`;
+  li.createSpan({
+    cls: guessed
+      ? 'local-fonts-face-source local-fonts-face-source-guessed'
+      : 'local-fonts-face-source',
+    text: ` · ${description}`,
+  });
+}
+
+/** One `<li>` per face: what it is, whether this engine can draw its colour glyphs,
+ *  whether `selectFaces` chose it and why (or why not), its variable axes if any, and
+ *  which extraction level supplied its data — a guess must never look parsed. */
+function renderFaceRow(list: HTMLElement, face: FaceRecord, verdict: FaceVerdict): void {
+  const li = list.createEl('li');
+  li.createSpan({
+    cls: 'local-fonts-face-summary',
+    text: `${String(face.weight)}${face.italic ? ' italic' : ''} · ${face.format} · ${formatSize(face.size)}`,
+  });
+
+  renderFaceColour(li, face, verdict);
+  renderFaceAxes(li, face);
+  renderFaceVerdict(li, verdict);
+  renderFaceSource(li, face);
 }
