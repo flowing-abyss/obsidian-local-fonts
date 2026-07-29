@@ -1,0 +1,15 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "project": ["src/**/*.ts", "*.mjs", "*.mts", "tests/e2e/**/*.ts", "tests/e2e/**/*.mts"],
+  "entry": ["tests/e2e/**/*.e2e.ts"],
+  "ignoreDependencies": [
+    // wdio services/frameworks/drivers referenced by plugin-name string in the wdio
+    // configs (`services: ['obsidian', ['appium', ...]]`, `framework: 'mocha'`), not
+    // by import — knip can't trace those.
+    "@wdio/appium-service",
+    "@wdio/local-runner",
+    "@wdio/mocha-framework",
+    "wdio-obsidian-reporter",
+  ],
+  "include": ["files", "dependencies", "unlisted", "unresolved", "exports", "types", "duplicates"],
+}

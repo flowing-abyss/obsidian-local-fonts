@@ -1,0 +1,14 @@
+/*
+Obsidian loads this file automatically alongside main.js — no <link> or import needed.
+Scope every rule under a plugin-specific class (never bare element/tag selectors) and
+prefer Obsidian's CSS custom properties over hardcoded colors, so the plugin follows
+the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interface/CSS
+*/
+
+.your-id-here-example {
+  color: var(--text-normal);
+  background-color: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  padding: var(--size-4-2);
+}

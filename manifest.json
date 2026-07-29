@@ -1,0 +1,9 @@
+{
+  "id": "your-id-here",
+  "name": "Your Title Here",
+  "version": "0.1.2",
+  "minAppVersion": "1.0.3",
+  "description": "Describe what this does in one sentence.",
+  "author": "Your Name",
+  "isDesktopOnly": false
+}

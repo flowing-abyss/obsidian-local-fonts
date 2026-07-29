@@ -1,0 +1,15 @@
+coverage/
+dist/
+node_modules/
+main.js
+pnpm-lock.yaml
+
+# Vendored skill library — not ours to reformat.
+.ai/skills/
+
+# Generated symlinks back into .ai/configs/ — Prettier refuses to follow
+# symlinks, and the real files (under .ai/configs/) are formatted directly.
+/AGENTS.md
+/CLAUDE.md
+/.mcp.json
+/opencode.json

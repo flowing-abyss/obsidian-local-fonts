@@ -1,0 +1,33 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "dependencyDashboard": true,
+  "rangeStrategy": "pin",
+  "minimumReleaseAge": "3 days",
+  "labels": ["dependencies"],
+  "packageRules": [
+    {
+      "description": "Automerge only low-risk patch updates after CI",
+      "matchUpdateTypes": ["patch", "digest"],
+      "automerge": true,
+      "automergeType": "pr",
+      "platformAutomerge": true
+    },
+    {
+      "description": "Never automerge major or minor runtime changes",
+      "matchUpdateTypes": ["major", "minor"],
+      "automerge": false
+    },
+    {
+      "description": "Keep TypeScript and typescript-eslint changes visible",
+      "matchPackageNames": ["typescript", "typescript-eslint", "/^@typescript-eslint\\//"],
+      "groupName": "typescript toolchain",
+      "automerge": false
+    },
+    {
+      "description": "obsidian ships bleeding-edge API types on its own cadence — never automerge",
+      "matchPackageNames": ["obsidian"],
+      "automerge": false
+    }
+  ]
+}

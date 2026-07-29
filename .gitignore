@@ -1,0 +1,52 @@
+# vscode
+.vscode
+
+# Intellij
+*.iml
+.idea
+
+# npm
+node_modules
+
+# Don't include the compiled main.js file in the repo.
+# They should be uploaded to GitHub releases instead.
+main.js
+
+# Exclude sourcemaps
+*.map
+
+# obsidian
+data.json
+
+# Exclude macOS Finder (System Explorer) View States
+.DS_Store
+
+# Coverage
+coverage/
+
+# E2E: downloaded Obsidian binaries/APKs, per-run WDIO output
+.obsidian-cache/
+tests/e2e/wdio-logs/
+allure-results/
+
+# AI
+.a5c/
+.agent/
+.agents/
+.claude/
+.codegraph/
+.codex/
+.forge/
+.opencode/
+.pi-lens/
+.pi/
+.serena/
+.superpowers/
+.worktrees/
+.zed/
+
+/.mcp.json
+/AGENTS.md
+CLAUDE.md
+/opencode.json
+
