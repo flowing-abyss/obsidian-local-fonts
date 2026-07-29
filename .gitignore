@@ -29,6 +29,9 @@ coverage/
 tests/e2e/wdio-logs/
 allure-results/
 
+# Docs
+docs/
+
 # AI
 .a5c/
 .agent/
