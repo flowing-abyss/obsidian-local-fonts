@@ -12,9 +12,10 @@
     "wdio-obsidian-reporter",
   ],
   "include": ["files", "dependencies", "unlisted", "unresolved", "exports", "types", "duplicates"],
-  "ignore": ["src/fonts/types.ts"],
-  // RoleName/RoleAssignments in settings.ts are exported for later tasks (settings UI) but
-  // only consumed within settings.ts itself today. Scoped to "type" only so unused
-  // interfaces/functions/classes elsewhere still get flagged as real dead code.
-  "ignoreExportsUsedInFile": { "type": true },
+  "ignore": [
+    "src/fonts/types.ts",
+    // RoleName/RoleAssignments are consumed by the settings UI in a later task; this
+    // entry comes out once that lands (mirrors the src/fonts/types.ts entry above).
+    "src/settings.ts",
+  ],
 }
