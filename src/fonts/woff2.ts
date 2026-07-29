@@ -206,17 +206,21 @@ function align4(n: number): number {
 
 /**
  * Tables this codebase's sfnt reader (`parseSfnt` in sfnt.ts) actually needs: family,
- * subfamily, weight, italic and license all come from `name`/`OS/2`, and never both. In
- * ASCII byte order `'OS/2'` sorts before `'name'` — sfnt table directories must be
- * tag-sorted, and since this list is fixed, that order needs no runtime sort.
+ * subfamily, weight, italic and license come from `name`/`OS/2`; writing-system
+ * coverage comes from `cmap`; variable-font axes come from `fvar`. WOFF2 only defines
+ * transforms for `glyf`, `loca` and `hmtx` — `cmap`, `fvar`, `name` and `OS/2` are
+ * always stored untransformed, so all four reassemble through the same
+ * copy-the-decompressed-bytes path. In ASCII byte order this list is already
+ * tag-sorted (`'OS/2'` < `'cmap'` < `'fvar'` < `'name'`) — sfnt table directories must
+ * be tag-sorted, and since this list is fixed, that order needs no runtime sort.
  */
-const REASSEMBLY_TAG_ORDER = ['OS/2', 'name'] as const;
+const REASSEMBLY_TAG_ORDER = ['OS/2', 'cmap', 'fvar', 'name'] as const;
 const REASSEMBLY_TAGS = new Set<string>(REASSEMBLY_TAG_ORDER);
 
 /**
- * Build a minimal, valid sfnt containing only `name`/`OS/2` (already-decompressed
- * bytes). Checksums are left as 0 — nothing in this codebase's sfnt reader verifies
- * them (see `readTableDirectory` in sfnt.ts).
+ * Build a minimal, valid sfnt containing only the reassembled tables present
+ * (already-decompressed bytes). Checksums are left as 0 — nothing in this codebase's
+ * sfnt reader verifies them (see `readTableDirectory` in sfnt.ts).
  */
 function buildMinimalSfnt(tables: Map<string, Uint8Array>): ArrayBuffer {
   const ordered = REASSEMBLY_TAG_ORDER.flatMap((tag) => {
@@ -254,11 +258,16 @@ function buildMinimalSfnt(tables: Map<string, Uint8Array>): ArrayBuffer {
 }
 
 /**
- * Reconstruct just enough of the sfnt inside a woff2 so `parseSfnt` can read `name` and
- * `OS/2` — family, subfamily, weight, italic, license. A full sfnt (every table,
- * glyf/loca detransformed) is out of scope here; those two tables are never
- * transformed, so once the brotli stream is decompressed, locating and copying their
- * bytes behind a freshly built directory is enough for this codebase's needs.
+ * Reconstruct just enough of the sfnt inside a woff2 so `parseSfnt` can read `name`,
+ * `OS/2`, `cmap` and `fvar` — family, subfamily, weight, italic, license, script
+ * coverage and variable-font axes, whichever of those four tables the font actually
+ * has. A full sfnt (every table, glyf/loca/hmtx detransformed) is out of scope: those
+ * three are the only tables WOFF2 defines transforms for, so this function only
+ * handles the tables that are always stored untransformed, where copying the
+ * decompressed bytes behind a freshly built directory is enough. `glyf`/`loca`/`hmtx`
+ * and hinting/layout tables (`GPOS`/`GSUB`/`kern`/…) are never reassembled — callers
+ * get metadata, not a renderable font. TTC/`ttcf`-flavoured collections are also out of
+ * scope; `parseWoff2Directory` assumes a single-font woff2.
  *
  * Returns null when no decoder is available or the font cannot be reassembled, which is
  * a supported outcome: the metadata chain falls through to the sibling-file and

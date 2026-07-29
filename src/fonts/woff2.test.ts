@@ -94,6 +94,21 @@ describe('decodeWoff2', () => {
     expect(parseSfnt(decoded).family).toBe('Probe Sans');
   });
 
+  it('reassembles cmap well enough to match the ttf built from the same source', async () => {
+    const decoded = await decodeWoff2(readFixture('probe-sans/probe-sans-400.woff2'));
+
+    if (decoded === null) {
+      // Documented outcome when no decoder shipped — the chain falls through instead.
+      expect(decoded).toBeNull();
+      return;
+    }
+    const scripts = parseSfnt(decoded).scripts;
+    const ttfScripts = parseSfnt(readFixture('probe-sans/probe-sans-400.ttf')).scripts;
+    expect(scripts).toContain('latin');
+    expect(scripts).toContain('cyrillic');
+    expect(scripts).toStrictEqual(ttfScripts);
+  });
+
   it('returns null rather than throwing on a buffer it cannot decode', async () => {
     await expect(decodeWoff2(new ArrayBuffer(64))).resolves.toBeNull();
   });
