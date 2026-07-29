@@ -102,12 +102,7 @@ async function inflateWoff1Table(
   buf: ArrayBuffer,
   entry: Woff1DirectoryEntry,
 ): Promise<Uint8Array | null> {
-  if (
-    entry.offset < 0 ||
-    entry.compLength < 0 ||
-    entry.origLength < 0 ||
-    entry.offset + entry.compLength > buf.byteLength
-  ) {
+  if (entry.offset + entry.compLength > buf.byteLength) {
     return null;
   }
   const body = new Uint8Array(buf, entry.offset, entry.compLength);

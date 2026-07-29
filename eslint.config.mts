@@ -149,15 +149,7 @@ export default defineConfig(
     // tests/e2e/*.mts run under Node via the wdio CLI; the spec files also run under
     // Node (only the `executeObsidian` callback bodies they send get serialized into
     // the real Obsidian process), so the same reasoning applies to all of tests/e2e/.
-    files: [
-      '*.cjs',
-      'release-check.mjs',
-      'tests/e2e/**/*.ts',
-      'tests/e2e/**/*.mts',
-      // Test-only fixture path helper — reads checked-in fonts from disk under Node
-      // (vitest), never imported by plugin source, so it never ships in main.js.
-      'src/fonts/fixtures.ts',
-    ],
+    files: ['*.cjs', 'release-check.mjs', 'tests/e2e/**/*.ts', 'tests/e2e/**/*.mts'],
     languageOptions: {
       globals: { ...globals.node },
     },
@@ -169,6 +161,20 @@ export default defineConfig(
       // and false-positives on them; typescript-eslint's own type checking already
       // catches genuinely undefined references here.
       'no-undef': 'off',
+    },
+  },
+  {
+    // Test-only fixture path helper — reads checked-in fonts from disk under Node
+    // (vitest), never imported by plugin source, so it never ships in main.js. Only
+    // needs the two obsidianmd rules relaxed: it doesn't use console or undeclared
+    // globals, so those stay on.
+    files: ['src/fonts/fixtures.ts'],
+    languageOptions: {
+      globals: { ...globals.node },
+    },
+    rules: {
+      'obsidianmd/no-nodejs-modules': 'off',
+      'obsidianmd/rule-custom-message': 'off',
     },
   },
   {
