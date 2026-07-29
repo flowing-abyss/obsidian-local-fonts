@@ -25,13 +25,27 @@ modification time since the last scan.
 
 ## Adding fonts
 
-Drop font files into the fonts folder. **Filenames don't matter** — you can
-organize them however you like (a subfolder per family is a reasonable
-convention, but the plugin doesn't require it; it groups faces by the family
-name parsed from each file). The folder can be hidden (dot-prefixed, `.fonts`
-by default) so a font collection doesn't clutter your note tree — Obsidian's
-own vault index can't see into dot-folders, which is exactly why the plugin
-reads the filesystem directly instead.
+Drop font files into the fonts folder. **In normal use, filenames don't
+matter** — every face's family, weight, style and the rest are read straight
+out of the font binary, and the plugin groups faces by that parsed family
+name, not by folder structure (a subfolder per family is a reasonable
+convention, but nothing requires it).
+
+Names only come into play as a fallback, in two specific cases: if a
+`.woff2`/`.woff` file's metadata can't be decoded, the plugin looks for a
+sibling file with the **same filename stem** (e.g. `foo.woff2` and `foo.ttf`)
+and reads that instead; and if nothing at all can be parsed, it falls back to
+guessing family/weight/style from the filename itself. Practically, this
+means a `.woff2` and `.ttf` of the same face should share a stem — mismatched
+names silently lose the sibling fallback, and you get a filename guess or a
+missing face instead. The diagnostics card names exactly which level
+supplied each face's data, so a guess never gets mistaken for something
+parsed.
+
+The folder can be hidden (dot-prefixed, `.fonts` by default) so a font
+collection doesn't clutter your note tree — Obsidian's own vault index can't
+see into dot-folders, which is exactly why the plugin reads the filesystem
+directly instead.
 
 **Shipping the same face in more than one format is an encouraged workflow,
 not an edge case.** If a family's regular weight exists as both `.woff2` and
@@ -44,8 +58,9 @@ order:
 2. **Format preference** among the renderable candidates: woff2 > woff > otf
    > ttf.
 3. **Smaller file**, if formats tie.
-4. **A deterministic tie-break** on file path, so the same vault always
-   produces byte-identical CSS.
+4. **A deterministic tie-break** on file path (shorter path wins, then
+   lexicographic order), so the same vault always produces byte-identical
+   CSS.
 
 ## Settings
 
@@ -109,8 +124,9 @@ you point it at, in your own vault.
 
 ## Limitations
 
-- The desktop end-to-end suite is verified against Obsidian 1.0.3 and
-  1.12.7. **Android has not been verified by an automated run**, and no
+- The desktop end-to-end suite is verified against Obsidian 1.0.3 (the
+  minimum supported version) and the latest stable release at the time of
+  testing. **Android has not been verified by an automated run**, and no
   automation exists for iOS at all. If you're on either platform, use the
   **Check** button after setting things up — it's there precisely so you can
   confirm a font actually rendered on your own device rather than take it on
