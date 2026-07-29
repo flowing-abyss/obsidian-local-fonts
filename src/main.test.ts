@@ -223,6 +223,57 @@ describe('LocalFontsPlugin', () => {
     expect(saveData).not.toHaveBeenCalled();
   });
 
+  it('reports a file that could not be read, so a bad font is discoverable rather than only console.warn-ed', async () => {
+    const adapter = plugin.app.vault.adapter;
+    vi.spyOn(adapter, 'list').mockResolvedValue({ files: ['.fonts/bad-400.ttf'], folders: [] });
+    vi.spyOn(adapter, 'stat').mockRejectedValue(new Error('EPERM'));
+
+    await plugin.onload();
+    await plugin.rescan();
+
+    expect(plugin.skippedFiles()).toStrictEqual(['.fonts/bad-400.ttf']);
+  });
+
+  it('clears skippedFiles once a later scan no longer skips anything', async () => {
+    const adapter = plugin.app.vault.adapter;
+    const list = vi.spyOn(adapter, 'list');
+    list.mockResolvedValueOnce({ files: ['.fonts/bad-400.ttf'], folders: [] });
+    vi.spyOn(adapter, 'stat').mockRejectedValueOnce(new Error('EPERM'));
+
+    await plugin.onload();
+    await plugin.rescan();
+    expect(plugin.skippedFiles()).toStrictEqual(['.fonts/bad-400.ttf']);
+
+    list.mockResolvedValueOnce({ files: [], folders: [] });
+    await plugin.rescan();
+
+    expect(plugin.skippedFiles()).toStrictEqual([]);
+  });
+
+  it('has no scan failure reported before any scan runs', async () => {
+    await plugin.onload();
+
+    expect(plugin.lastScanFailure()).toBeNull();
+  });
+
+  it('surfaces a deferred rescan failure instead of leaving it in console.error only', async () => {
+    await plugin.app.vault.adapter.writeBinary(
+      '.fonts/probe-sans-400.ttf',
+      readFixture('probe-sans/probe-sans-400.ttf'),
+    );
+    await plugin.onload();
+    vi.spyOn(plugin, 'rescan').mockRejectedValue(new Error('disk exploded'));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const workspace = plugin.app.workspace as unknown as { setLayoutReady__: () => void };
+    workspace.setLayoutReady__();
+
+    await vi.waitFor(() => {
+      expect(plugin.lastScanFailure()).toBe('disk exploded');
+    });
+    expect(consoleError).toHaveBeenCalled();
+  });
+
   describe('when adoptedStyleSheets is supported (Chromium 73+, WebKit 16.4+)', () => {
     beforeEach(() => {
       // jsdom itself doesn't implement the `adoptedStyleSheets` accessor, so stub it as a

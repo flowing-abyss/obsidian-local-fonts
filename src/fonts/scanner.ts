@@ -68,22 +68,24 @@ function memoizedReader(adapter: FontAdapter): FileReader {
   };
 }
 
-async function collect(
-  adapter: FontAdapter,
-  folder: string,
-  out: FoundFile[],
-  visited: Set<string>,
-): Promise<void> {
+interface CollectContext {
+  adapter: FontAdapter;
+  out: FoundFile[];
+  visited: Set<string>;
+  onSkip?: (path: string) => void;
+}
+
+async function collect(folder: string, ctx: CollectContext): Promise<void> {
   // Guards against a symlinked-cyclic folder tree (e.g. a folder that links back to an
   // ancestor) causing unbounded recursion. Real filesystems can and do have these.
-  if (visited.has(folder)) {
+  if (ctx.visited.has(folder)) {
     return;
   }
-  visited.add(folder);
+  ctx.visited.add(folder);
 
   let listing: { files: string[]; folders: string[] };
   try {
-    listing = await adapter.list(folder);
+    listing = await ctx.adapter.list(folder);
   } catch {
     return; // Missing or unreadable folder is not an error: there are simply no fonts.
   }
@@ -92,23 +94,24 @@ async function collect(
   const stamped = await mapLimit(fonts, CONCURRENCY_LIMIT, async (path) => {
     let stat: { size: number; mtime: number } | null;
     try {
-      stat = await adapter.stat(path);
+      stat = await ctx.adapter.stat(path);
     } catch (error) {
       // One unreadable file (permission oddity, interrupted sync, ...) must not take
       // down the whole scan; the user still gets every other font.
       console.warn(`[local-fonts] failed to stat font file, skipping: ${path}`, error);
+      ctx.onSkip?.(path);
       return null;
     }
     return stat === null ? null : { path, size: stat.size, mtime: stat.mtime, siblings: fonts };
   });
   for (const file of stamped) {
     if (file !== null) {
-      out.push(file);
+      ctx.out.push(file);
     }
   }
 
   for (const sub of listing.folders) {
-    await collect(adapter, sub, out, visited);
+    await collect(sub, ctx);
   }
 }
 
@@ -120,14 +123,29 @@ async function collect(
  */
 export async function listStamps(adapter: FontAdapter, folder: string): Promise<FileStamp[]> {
   const found: FoundFile[] = [];
-  await collect(adapter, folder, found, new Set());
+  await collect(folder, { adapter, out: found, visited: new Set() });
   return found.map(({ path, size, mtime }) => ({ path, size, mtime }));
 }
 
-/** Walk the folder recursively and extract a record for every font file found. */
-export async function scanFolder(adapter: FontAdapter, folder: string): Promise<FaceRecord[]> {
+/**
+ * Walk the folder recursively and extract a record for every font file found.
+ *
+ * `onSkip`, if given, is called once per file that could not be read or parsed — the
+ * settings tab uses it to tell the user a file was dropped, rather than the silence of
+ * a `console.warn` no one but a developer will ever open.
+ */
+export async function scanFolder(
+  adapter: FontAdapter,
+  folder: string,
+  onSkip?: (path: string) => void,
+): Promise<FaceRecord[]> {
   const found: FoundFile[] = [];
-  await collect(adapter, folder, found, new Set());
+  await collect(folder, {
+    adapter,
+    out: found,
+    visited: new Set(),
+    ...(onSkip !== undefined && { onSkip }),
+  });
 
   const extracted = await mapLimit(found, CONCURRENCY_LIMIT, async (file) => {
     try {
@@ -143,6 +161,7 @@ export async function scanFolder(adapter: FontAdapter, folder: string): Promise<
       // be able to take down the whole scan even if that contract regresses later:
       // defence in depth, not trust in a neighbouring module's promise.
       console.warn(`[local-fonts] failed to read font metadata, skipping: ${file.path}`, error);
+      onSkip?.(file.path);
       return null;
     }
   });

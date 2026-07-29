@@ -5,6 +5,7 @@ import type { Engine } from './fonts/platform.js';
 import { listStamps, type FontAdapter } from './fonts/scanner.js';
 import { selectFaces } from './fonts/select.js';
 import type { FaceRecord } from './fonts/types.js';
+import { LocalFontsSettingTab } from './settings-tab.js';
 import { DEFAULT_SETTINGS, type PluginSettings } from './settings.js';
 import { mergeSettings } from './utils/merge-settings.js';
 
@@ -24,6 +25,10 @@ export default class LocalFontsPlugin extends Plugin {
   private sheet: CSSStyleSheet | null = null;
   /** Fallback for WebKit below 16.4, where the sheet above doesn't exist. */
   private styleEl: HTMLStyleElement | null = null;
+  /** Paths dropped by the most recent scan, surfaced by the settings tab. */
+  private skipped: string[] = [];
+  /** Message from the most recent failed scan, surfaced by the settings tab. */
+  private scanError: string | null = null;
 
   override async onload(): Promise<void> {
     const saved = (await this.loadData()) as Partial<PluginSettings> | null;
@@ -31,10 +36,14 @@ export default class LocalFontsPlugin extends Plugin {
 
     // Startup path only: read the cache, build a string, inject it. No font I/O.
     this.applyFonts();
+    this.addSettingTab(new LocalFontsSettingTab(this.app, this));
 
     // Scanning is deliberately deferred off the critical path.
     this.app.workspace.onLayoutReady(() => {
       this.rescanIfStale().catch((error: unknown) => {
+        // console.error alone is invisible to a non-technical user; the settings tab
+        // reads this back so a failed scan is something they can actually discover.
+        this.scanError = error instanceof Error ? error.message : String(error);
         console.error('[local-fonts] rescan failed', error);
       });
     });
@@ -58,6 +67,16 @@ export default class LocalFontsPlugin extends Plugin {
   /** Faces grouped by family, for the settings UI. */
   families(): Map<string, FaceRecord[]> {
     return groupIntoFamilies(this.settings.cache?.faces ?? []);
+  }
+
+  /** Files dropped by the most recent scan because they could not be read or parsed. */
+  skippedFiles(): readonly string[] {
+    return this.skipped;
+  }
+
+  /** Message from the most recent scan that failed outright, or null if none has. */
+  lastScanFailure(): string | null {
+    return this.scanError;
   }
 
   /** Regenerate and apply the stylesheet from the current cache and settings. */
@@ -109,7 +128,12 @@ export default class LocalFontsPlugin extends Plugin {
 
   /** Rescan the folder and re-apply. Safe to call at any time; never on the startup path. */
   async rescan(): Promise<void> {
-    const cache = await buildCache(this.adapter(), this.settings.folder);
+    const skipped: string[] = [];
+    const cache = await buildCache(this.adapter(), this.settings.folder, (path) => {
+      skipped.push(path);
+    });
+    this.skipped = skipped;
+    this.scanError = null;
     // A scan that finds nothing is more likely a bad folder path (renamed/moved) than an
     // intentionally emptied one — keep the last-known-good cache rather than clobbering
     // it, so the user doesn't lose every font over a typo'd path.

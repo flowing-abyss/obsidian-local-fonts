@@ -5,10 +5,26 @@ prefer Obsidian's CSS custom properties over hardcoded colors, so the plugin fol
 the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interface/CSS
 */
 
-.your-id-here-example {
-  color: var(--text-normal);
-  background-color: var(--background-secondary);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: var(--radius-s);
-  padding: var(--size-4-2);
+.local-fonts-family {
+  margin-block: 0.5em;
+}
+
+.local-fonts-family-name {
+  cursor: pointer;
+  font-weight: var(--font-semibold);
+}
+
+.local-fonts-faces {
+  margin: 0;
+  padding-inline-start: 1.5em;
+}
+
+.local-fonts-warning {
+  color: var(--text-error);
+}
+
+.local-fonts-licence,
+.local-fonts-empty,
+.local-fonts-source {
+  color: var(--text-muted);
 }

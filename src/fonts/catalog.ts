@@ -30,11 +30,15 @@ export function isCacheStale(
  * full colour-format set and never chooses between competing files. `data.json` syncs
  * across devices, so a cached choice would corrupt other platforms silently.
  */
-export async function buildCache(adapter: FontAdapter, folder: string): Promise<FontCache> {
+export async function buildCache(
+  adapter: FontAdapter,
+  folder: string,
+  onSkip?: (path: string) => void,
+): Promise<FontCache> {
   return {
     version: CACHE_VERSION,
     folder,
-    faces: await scanFolder(adapter, folder),
+    faces: await scanFolder(adapter, folder, onSkip),
   };
 }
 

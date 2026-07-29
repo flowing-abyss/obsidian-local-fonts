@@ -201,5 +201,34 @@ export default defineConfig(
       'obsidianmd/prefer-create-el': 'off',
     },
   },
+  {
+    // The "Fonts found" heading sits above the diagnostics cards, which are read-only
+    // information (what was parsed out of the user's font files), not settings — the
+    // settings surface itself is deliberately capped at seven controls (folder, five
+    // roles, hard override) so it can't be confused with the diagnostics below it.
+    // `new Setting(...).setHeading()` would make this heading indistinguishable from an
+    // actual control (and from the "exactly seven controls" contract this file is
+    // tested against), so a plain heading element is the correct choice here, not a
+    // workaround.
+    files: ['src/settings-tab.ts'],
+    rules: {
+      'obsidianmd/settings-tab/no-manual-html-headings': 'off',
+    },
+  },
+  {
+    // `display()` was marked deprecated in Obsidian 1.13.0 in favour of a declarative
+    // `getSettingDefinitions()` API, but that API describes simple name/desc/control
+    // rows — it has no way to express this file's diagnostics section (a variable
+    // number of collapsible per-family cards, each with its own selected-face list,
+    // script coverage and licence text, built from the current scan). `display()` is
+    // still fully supported at runtime and is the only API that can render that.
+    // manifest.json's minAppVersion (1.0.3) predates the declarative API entirely.
+    // Applies to the test file too, since it calls `tab.display()` directly.
+    files: ['src/settings-tab.ts', 'src/settings-tab.test.ts'],
+    rules: {
+      '@typescript-eslint/no-deprecated': 'off',
+      'obsidianmd/settings-tab/prefer-setting-definitions': 'off',
+    },
+  },
   prettier,
 );
