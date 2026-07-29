@@ -45,12 +45,27 @@ export function readTableDirectory(buf: ArrayBuffer): Map<string, TableEntry> {
   return dir;
 }
 
+/** A directory entry may lie about a table's extent in a truncated or corrupt file. */
+function tableView(buf: ArrayBuffer, entry: TableEntry): DataView | null {
+  if (entry.offset < 0 || entry.length < 0 || entry.offset + entry.length > buf.byteLength) {
+    return null;
+  }
+  return new DataView(buf, entry.offset, entry.length);
+}
+
 /**
- * Map table tags to colour formats. COLR is split by version because engine support
- * differs between v0 and v1; reading the version needs the table body, so callers that
- * only have tags (a woff2 directory) get COLR1 assumed — the safer guess, since a v0-only
- * font misreported as v1 still renders on every engine that lists v0.
+ * COLR is split by version because engine support differs between v0 and v1; reading
+ * the version needs the table body, so callers that only have tags (a woff2 directory,
+ * which yields tags but never table bodies) get COLR1 assumed — the safer guess, since a
+ * v0-only font misreported as v1 still renders on every engine that lists v0.
  */
+function colrFormat(buf: ArrayBuffer | undefined, entry: TableEntry | undefined): ColorFormat {
+  const view = buf !== undefined && entry !== undefined ? tableView(buf, entry) : null;
+  const version = view !== null && view.byteLength >= 2 ? view.getUint16(0) : 1;
+  return version >= 1 ? 'COLR1' : 'COLR0';
+}
+
+/** Map table tags to colour formats. See {@link colrFormat} for the COLR version rule. */
 export function colorFormatsFromTags(
   tags: Iterable<string>,
   buf?: ArrayBuffer,
@@ -59,10 +74,7 @@ export function colorFormatsFromTags(
   const present = new Set(tags);
   const formats: ColorFormat[] = [];
   if (present.has('COLR')) {
-    const entry = dir?.get('COLR');
-    const version =
-      buf !== undefined && entry !== undefined ? new DataView(buf).getUint16(entry.offset) : 1;
-    formats.push(version >= 1 ? 'COLR1' : 'COLR0');
+    formats.push(colrFormat(buf, dir?.get('COLR')));
   }
   if (present.has('CBDT')) {
     formats.push('CBDT');
@@ -98,7 +110,10 @@ function decodeNameString(
 }
 
 function readNames(buf: ArrayBuffer, entry: TableEntry): Map<number, string> {
-  const view = new DataView(buf, entry.offset, entry.length);
+  const view = tableView(buf, entry);
+  if (view === null) {
+    return new Map<number, string>();
+  }
   const count = view.getUint16(2);
   const stringOffset = view.getUint16(4);
   const names = new Map<number, string>();
@@ -129,9 +144,12 @@ const SCRIPT_PROBES: ReadonlyArray<readonly [Script, readonly number[]]> = [
 ];
 
 function readCmapCodepoints(buf: ArrayBuffer, entry: TableEntry): Set<number> {
-  const view = new DataView(buf, entry.offset, entry.length);
-  const numSubtables = view.getUint16(2);
   const codepoints = new Set<number>();
+  const view = tableView(buf, entry);
+  if (view === null) {
+    return codepoints;
+  }
+  const numSubtables = view.getUint16(2);
   for (let i = 0; i < numSubtables; i++) {
     const rec = 4 + i * 8;
     if (rec + 8 > view.byteLength) {
@@ -151,6 +169,12 @@ function readCmapCodepoints(buf: ArrayBuffer, entry: TableEntry): Set<number> {
   return codepoints;
 }
 
+/**
+ * Enumerates the codepoints a format-4 subtable's [start, end] segments claim to map.
+ * This approximates script coverage for detection purposes; a codepoint being mapped
+ * does not guarantee the glyph it points to is non-empty or renders — good enough for
+ * "does this font claim Cyrillic" but not for glyph-exact presence checks.
+ */
 function readCmapFormat4(view: DataView, base: number, out: Set<number>): void {
   const segCountX2 = view.getUint16(base + 6);
   const endBase = base + 14;
@@ -167,6 +191,7 @@ function readCmapFormat4(view: DataView, base: number, out: Set<number>): void {
   }
 }
 
+/** Same approximation as {@link readCmapFormat4}, for format-12 [start, end] groups. */
 function readCmapFormat12(view: DataView, base: number, out: Set<number>): void {
   const numGroups = view.getUint32(base + 12);
   for (let g = 0; g < numGroups; g++) {
@@ -214,7 +239,10 @@ function readAxes(buf: ArrayBuffer, entry: TableEntry | undefined): VariableAxis
   if (entry === undefined) {
     return [];
   }
-  const view = new DataView(buf, entry.offset, entry.length);
+  const view = tableView(buf, entry);
+  if (view === null) {
+    return [];
+  }
   const axesArrayOffset = view.getUint16(4);
   const axisCount = view.getUint16(8);
   const axisSize = view.getUint16(10);
@@ -247,14 +275,21 @@ interface Os2Info {
   italic: boolean;
 }
 
+const OS2_FS_SELECTION_OFFSET = 62;
+const OS2_MIN_LENGTH = OS2_FS_SELECTION_OFFSET + 2;
+
 function readOs2(buf: ArrayBuffer, entry: TableEntry | undefined): Os2Info {
+  const defaults: Os2Info = { weight: OS2_DEFAULT_WEIGHT, italic: false };
   if (entry === undefined) {
-    return { weight: OS2_DEFAULT_WEIGHT, italic: false };
+    return defaults;
   }
-  const view = new DataView(buf, entry.offset, entry.length);
+  const view = tableView(buf, entry);
+  if (view === null || view.byteLength < OS2_MIN_LENGTH) {
+    return defaults;
+  }
   return {
     weight: view.getUint16(4),
-    italic: (view.getUint16(62) & OS2_ITALIC_BIT) !== 0,
+    italic: (view.getUint16(OS2_FS_SELECTION_OFFSET) & OS2_ITALIC_BIT) !== 0,
   };
 }
 

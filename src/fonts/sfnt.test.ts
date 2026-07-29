@@ -121,6 +121,12 @@ describe('colorFormatsFromTags', () => {
 
     expect(colorFormatsFromTags(dir.keys(), buf, dir)).toStrictEqual(['COLR1']);
   });
+
+  it('assumes COLRv1 when called with tags alone, as a woff2 directory yields no table bodies', () => {
+    // This is the exact call shape Task 5 uses: a woff2 table directory has tags but
+    // never table contents, so there is no COLR version byte to read.
+    expect(colorFormatsFromTags(['COLR'])).toStrictEqual(['COLR1']);
+  });
 });
 
 describe('parseSfnt', () => {
@@ -213,6 +219,70 @@ describe('parseSfnt', () => {
     const info = parseSfnt(buildSfnt([{ tag: 'name', data: name }]));
 
     expect(info.family).toBe('AB');
+  });
+
+  it('falls back to an empty family when the name entry points past the end of the buffer', () => {
+    // A truncated or corrupt file: the directory advertises a `name` table that
+    // extends beyond the actual file. Must fall back gracefully, not throw.
+    const buf = new ArrayBuffer(12 + 16);
+    const view = new DataView(buf);
+    view.setUint32(0, 0x0001_0000);
+    view.setUint16(4, 1);
+    const tag = 'name';
+    for (let c = 0; c < 4; c++) {
+      view.setUint8(12 + c, tag.charCodeAt(c));
+    }
+    view.setUint32(20, 1000); // offset far past the buffer
+    view.setUint32(24, 4); // length
+
+    const info = parseSfnt(buf);
+
+    expect(info.family).toBe('');
+  });
+
+  it('falls back to default weight and upright style when OS/2 is shorter than fsSelection', () => {
+    // A directory entry can claim a length too short to reach the fsSelection field
+    // (offset 62) that italic detection reads.
+    const os2 = new Uint8Array(8);
+
+    const info = parseSfnt(buildSfnt([{ tag: 'OS/2', data: os2 }]));
+
+    expect(info.weight).toBe(400);
+    expect(info.italic).toBe(false);
+  });
+
+  it('reports no scripts when the cmap entry points past the end of the buffer', () => {
+    const buf = new ArrayBuffer(12 + 16);
+    const view = new DataView(buf);
+    view.setUint32(0, 0x0001_0000);
+    view.setUint16(4, 1);
+    const tag = 'cmap';
+    for (let c = 0; c < 4; c++) {
+      view.setUint8(12 + c, tag.charCodeAt(c));
+    }
+    view.setUint32(20, 1000); // offset far past the buffer
+    view.setUint32(24, 4); // length
+
+    const info = parseSfnt(buf);
+
+    expect(info.scripts).toStrictEqual([]);
+  });
+
+  it('reports no variable axes when the fvar entry points past the end of the buffer', () => {
+    const buf = new ArrayBuffer(12 + 16);
+    const view = new DataView(buf);
+    view.setUint32(0, 0x0001_0000);
+    view.setUint16(4, 1);
+    const tag = 'fvar';
+    for (let c = 0; c < 4; c++) {
+      view.setUint8(12 + c, tag.charCodeAt(c));
+    }
+    view.setUint32(20, 1000); // offset far past the buffer
+    view.setUint32(24, 4); // length
+
+    const info = parseSfnt(buf);
+
+    expect(info.axes).toStrictEqual([]);
   });
 
   it('does not report a script whose cmap ranges are entirely absent', () => {
