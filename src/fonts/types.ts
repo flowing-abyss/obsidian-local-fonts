@@ -43,3 +43,10 @@ export interface FontCache {
   folder: string;
   faces: FaceRecord[];
 }
+
+/** A file's identity for staleness checks: path plus the size/mtime pair that changes when it does. */
+export interface FileStamp {
+  path: string;
+  size: number;
+  mtime: number;
+}
