@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readFixture } from './fixtures.js';
 import type * as MetadataModule from './metadata.js';
-import { scanFolder, type FontAdapter } from './scanner.js';
+import { listStamps, scanFolder, type FontAdapter } from './scanner.js';
 
 function fakeAdapter(tree: Record<string, { files: string[]; folders: string[] }>): FontAdapter {
   return {
@@ -173,5 +173,23 @@ describe('scanFolder', () => {
         '.fonts/c-400.ttf',
       ]);
     });
+  });
+});
+
+describe('listStamps', () => {
+  it('returns paths, sizes and mtimes without reading any font bytes', async () => {
+    const adapter = fakeAdapter({
+      '.fonts': { files: ['.fonts/probe-sans-400.ttf'], folders: [] },
+    });
+    let reads = 0;
+    adapter.readBinary = async (_path) => {
+      reads++;
+      return readFixture('probe-sans/probe-sans-400.ttf');
+    };
+
+    const stamps = await listStamps(adapter, '.fonts');
+
+    expect(stamps).toStrictEqual([{ path: '.fonts/probe-sans-400.ttf', size: 1234, mtime: 42 }]);
+    expect(reads).toBe(0);
   });
 });

@@ -1,6 +1,6 @@
 import { formatOf } from './filename.js';
 import { extractMetadata, type FileReader } from './metadata.js';
-import type { FaceRecord } from './types.js';
+import type { FaceRecord, FileStamp } from './types.js';
 
 /**
  * The slice of Obsidian's DataAdapter this plugin needs.
@@ -110,6 +110,18 @@ async function collect(
   for (const sub of listing.folders) {
     await collect(adapter, sub, out, visited);
   }
+}
+
+/**
+ * Cheap listing: paths, sizes and mtimes only, no font parsing.
+ *
+ * Safe to run on startup — used to decide whether the cache is stale without paying
+ * for a full scan (which decodes and parses every font file).
+ */
+export async function listStamps(adapter: FontAdapter, folder: string): Promise<FileStamp[]> {
+  const found: FoundFile[] = [];
+  await collect(adapter, folder, found, new Set());
+  return found.map(({ path, size, mtime }) => ({ path, size, mtime }));
 }
 
 /** Walk the folder recursively and extract a record for every font file found. */

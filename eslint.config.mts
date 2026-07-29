@@ -171,5 +171,20 @@ export default defineConfig(
       'no-undef': 'off',
     },
   },
+  {
+    // `no-forbidden-elements` targets plugins shipping *static* CSS through an injected
+    // element ("use a styles.css file instead"). This plugin's CSS is generated at
+    // runtime from @font-face rules for fonts scanned out of the user's own vault, plus
+    // role assignments made in the settings tab — styles.css cannot express either, since
+    // both vary per vault and per user. The primary delivery path (applyViaAdoptedStyleSheet
+    // in main.ts) uses a constructable stylesheet and creates no element at all, so the
+    // rule never fires there. The element created here is a fallback for WebKit below
+    // 16.4 (iOS/iPadOS 16.0–16.3), where `adoptedStyleSheets` doesn't exist and skipping
+    // the fallback would silently leave those users with no fonts.
+    files: ['src/main.ts'],
+    rules: {
+      'obsidianmd/no-forbidden-elements': 'off',
+    },
+  },
   prettier,
 );
