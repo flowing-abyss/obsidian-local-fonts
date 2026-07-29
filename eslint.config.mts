@@ -191,9 +191,10 @@ export default defineConfig(
     // works if the probe element's styles are exactly what the code sets and nothing else —
     // a CSS class in styles.css could be overridden by a theme (or by the plugin's own
     // generated font-role CSS) and silently corrupt the measurement. So static inline styles
-    // are the correct tool here, not a workaround. The module also takes a plain `Document`
-    // (per its public API, so it works with any document, in-app or under test) rather than
-    // an Obsidian `App`/`WorkspaceWindow`, so `doc.win.createSpan()` isn't available either.
+    // are the correct tool here, not a workaround. `createSpan` is likewise not an option:
+    // Obsidian patches it onto `Node`/`HTMLElement` at runtime, so it's absent under jsdom
+    // and on any plain `Document` — using it would break the portability this module's
+    // signature promises (it works with any `Document`, in-app or under test).
     files: ['src/fonts/probe.ts'],
     rules: {
       'obsidianmd/no-static-styles-assignment': 'off',
