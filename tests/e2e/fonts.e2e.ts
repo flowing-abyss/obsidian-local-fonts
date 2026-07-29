@@ -65,16 +65,48 @@ describe('local fonts apply in a real Obsidian', () => {
   });
 
   it('loads a font from the hidden .fonts folder, proving dot-folder access works', async () => {
-    const loaded = await browser.executeObsidian(async () => {
+    // A registered FontFace with a matching family name alone would still pass even if
+    // the fixtures were moved out of a hidden folder — the guarantee would live in the
+    // fixture layout, not in this assertion. Reading the actual @font-face `src` URL for
+    // a Probe face and requiring it to contain `.fonts` makes the test state what it
+    // claims to prove: this specific font was served from inside the dot-folder, and it
+    // would fail if that folder were ever renamed to something visible.
+    const result = await browser.executeObsidian(async () => {
       await document.fonts.ready;
-      let found = false;
+      let registered = false;
       document.fonts.forEach((f) => {
-        if (f.family.includes('Probe')) found = true;
+        if (f.family.includes('Probe')) registered = true;
       });
-      return found;
+
+      const cssBlocks: string[] = [];
+      const styleEl = document.getElementById('local-fonts-style');
+      if (styleEl !== null) {
+        // css.ts joins blocks with a blank line between them (see buildCss), so split
+        // back into one block per @font-face / rule, matching the per-rule granularity
+        // of the adoptedStyleSheets branch below.
+        cssBlocks.push(...styleEl.textContent.split('\n\n'));
+      } else {
+        for (const sheet of document.adoptedStyleSheets) {
+          cssBlocks.push(...Array.from(sheet.cssRules).map((rule) => rule.cssText));
+        }
+      }
+
+      let probeSrcUrl = '';
+      for (const block of cssBlocks) {
+        if (block.includes('Probe') && block.includes('@font-face')) {
+          const match = /url\(["']([^"')]+)["']\)/.exec(block);
+          if (match?.[1] !== undefined) {
+            probeSrcUrl = match[1];
+            break;
+          }
+        }
+      }
+
+      return { registered, probeSrcUrl };
     });
 
-    expect(loaded).toBe(true);
+    expect(result.registered).toBe(true);
+    expect(result.probeSrcUrl).toContain('.fonts');
   });
 
   it('renders text in the selected family, not a fallback', async () => {
@@ -124,18 +156,30 @@ describe('local fonts apply in a real Obsidian', () => {
     // override variable specifically won. Instead this asserts the inherited width
     // matches an explicit 'Probe Sans' request pixel-for-pixel, and differs from the
     // fallback — i.e. the cascade actually resolved to our font, not just to some font.
-    const result = await browser.executeObsidian(async ({ app }) => {
-      await document.fonts.load("64px 'Probe Sans'");
-
+    await browser.executeObsidian(async ({ app }) => {
       const file = app.vault.getFiles().find((f) => f.path === 'Welcome.md');
       if (file === undefined) {
         throw new Error('fixture note Welcome.md is missing from the vault');
       }
-
       const leaf = app.workspace.getLeaf(true);
       await leaf.openFile(file);
-      // Let the editor mount before probing its computed cascade.
-      await new Promise((resolve) => setTimeout(resolve, 250));
+    });
+
+    // A fixed sleep here would either flake on a slower machine or hide a real mounting
+    // delay behind a margin that happens to be generous enough today. Poll for the
+    // actual condition this test needs instead: a `.cm-content` element that exists AND
+    // has rendered the note's text, which is what "the editor mounted" concretely means.
+    await browser.waitUntil(
+      async () =>
+        browser.executeObsidian(() => {
+          const el = document.querySelector('.cm-content');
+          return el !== null && el.textContent.trim().length > 0;
+        }),
+      { timeout: 10_000, timeoutMsg: 'editor content element never mounted with text' },
+    );
+
+    const result = await browser.executeObsidian(async () => {
+      await document.fonts.load("64px 'Probe Sans'");
 
       const cmContent = document.querySelector('.cm-content');
       if (cmContent === null) {
