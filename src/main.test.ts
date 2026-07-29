@@ -77,13 +77,19 @@ describe('LocalFontsPlugin', () => {
   });
 
   it('does no font I/O during onload, so Obsidian start stays fast', async () => {
-    const adapter = plugin.app.vault.adapter as unknown as { list: () => Promise<unknown> };
-    const list = vi.fn().mockResolvedValue({ files: [], folders: [] });
-    adapter.list = list;
+    const io = {
+      list: vi.fn().mockResolvedValue({ files: [], folders: [] }),
+      stat: vi.fn().mockResolvedValue({ size: 0, mtime: 0 }),
+      readBinary: vi.fn().mockResolvedValue(new ArrayBuffer(0)),
+    };
+    Object.assign(plugin.app.vault.adapter, io);
 
     await plugin.onload();
 
-    expect(list).not.toHaveBeenCalled();
+    // Scanning is deferred behind onLayoutReady; nothing here may touch the filesystem.
+    expect(io.list).not.toHaveBeenCalled();
+    expect(io.stat).not.toHaveBeenCalled();
+    expect(io.readBinary).not.toHaveBeenCalled();
   });
 
   it('reuses the cached faces without rescanning', async () => {
@@ -277,9 +283,7 @@ describe('LocalFontsPlugin', () => {
 
     it('replaces the sheet in place on repeated calls instead of adopting duplicates', async () => {
       await plugin.onload();
-
-      plugin.applyFonts();
-      plugin.applyFonts();
+      await plugin.onload();
 
       expect(document.adoptedStyleSheets).toHaveLength(1);
     });
