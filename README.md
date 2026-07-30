@@ -1,5 +1,9 @@
 # Local Fonts
 
+[![Available in Obsidian](https://img.shields.io/badge/Available%20in%20Obsidian-7C3AED?logo=obsidian&logoColor=white&style=flat-square)](https://obsidian.md/plugins?id=local-fonts)
+[![Release](https://github.com/flowing-abyss/obsidian-local-fonts/actions/workflows/release.yml/badge.svg)](https://github.com/flowing-abyss/obsidian-local-fonts/actions/workflows/release.yml)
+[![Downloads](https://img.shields.io/github/downloads/flowing-abyss/obsidian-local-fonts/total?style=flat-square&label=downloads&color=blue)](https://github.com/flowing-abyss/obsidian-local-fonts/releases)
+
 Load fonts from a folder in your vault and apply them to text, interface, monospace,
 headings and emoji. Works on desktop and mobile, and makes no network requests.
 
@@ -75,16 +79,15 @@ shows which format is missing.
 
 ## Installation
 
-The plugin is not in Obsidian's community browser yet. To install it by hand:
+Open Settings → Community plugins, browse for **Local Fonts**, then install and enable it.
+You can also install it straight from
+[the plugin page](https://obsidian.md/plugins?id=local-fonts).
 
-1. Download `main.js`, `manifest.json` and `styles.css` from the
-   [latest release](https://github.com/flowing-abyss/obsidian-local-fonts/releases).
-2. Create a `local-fonts` folder inside your vault's `.obsidian/plugins/` directory and
-   put those three files in it.
-3. Restart Obsidian and enable **Local Fonts** under Settings → Community plugins.
-
-[BRAT](https://github.com/TfTHacker/obsidian42-brat) can install and update it from this
-repository directly.
+To install a build by hand, download `main.js`, `manifest.json` and `styles.css` from the
+[latest release](https://github.com/flowing-abyss/obsidian-local-fonts/releases), put them
+in a `local-fonts` folder inside your vault's `.obsidian/plugins/` directory, and restart
+Obsidian. [BRAT](https://github.com/TfTHacker/obsidian42-brat) does the same thing and
+keeps it updated from this repository.
 
 ## License
 
