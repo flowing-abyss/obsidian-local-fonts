@@ -1,6 +1,6 @@
 {
   "name": "local-fonts",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Load fonts from a folder in your vault and apply them to text, interface, headings, code and emoji.",
   "main": "main.js",
   "type": "module",
