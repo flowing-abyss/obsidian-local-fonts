@@ -28,6 +28,22 @@ const cache = (faces: FaceRecord[]): FontCache => ({
   faces,
 });
 
+/** A single-subfolder `list()` implementation shared by the `buildCache` tests below:
+ *  `.fonts` contains one subfolder, `.fonts/probe-sans`, which holds `files`. */
+function listSingleSubfolder(
+  files: readonly string[],
+): (path: string) => { files: string[]; folders: string[] } {
+  return (path) => {
+    if (path === '.fonts') {
+      return { files: [], folders: ['.fonts/probe-sans'] };
+    }
+    if (path === '.fonts/probe-sans') {
+      return { files: [...files], folders: [] };
+    }
+    return { files: [], folders: [] };
+  };
+}
+
 describe('isCacheStale', () => {
   it('is stale when there is no cache at all', () => {
     expect(isCacheStale(null, '.fonts', [])).toBe(true);
@@ -91,17 +107,8 @@ describe('buildCache', () => {
       '.fonts/probe-sans/probe-sans-400.woff',
       '.fonts/probe-sans/probe-sans-700italic.ttf',
     ];
-    function list(path: string): { files: string[]; folders: string[] } {
-      if (path === '.fonts') {
-        return { files: [], folders: ['.fonts/probe-sans'] };
-      }
-      if (path === '.fonts/probe-sans') {
-        return { files, folders: [] };
-      }
-      return { files: [], folders: [] };
-    }
     const adapter: FontAdapter = {
-      list: (path) => Promise.resolve(list(path)),
+      list: (path) => Promise.resolve(listSingleSubfolder(files)(path)),
       stat: () => Promise.resolve({ size: 1234, mtime: 42 }),
       readBinary: (path) =>
         Promise.resolve(readFixture(`probe-sans/${path.slice(path.lastIndexOf('/') + 1)}`)),
@@ -113,6 +120,113 @@ describe('buildCache', () => {
     const formatsAt400 = result.faces.filter((f) => f.weight === 400).map((f) => f.format);
     const sortedFormats = [...formatsAt400].sort((a, b) => a.localeCompare(b));
     expect(sortedFormats).toStrictEqual(['ttf', 'woff', 'woff2']);
+  });
+
+  describe('incremental rescan', () => {
+    // probe-sans/ has four real files; every file gets a distinct, stable mtime so a
+    // single touched file can be identified unambiguously.
+    const files = [
+      '.fonts/probe-sans/probe-sans-400.ttf',
+      '.fonts/probe-sans/probe-sans-400.woff2',
+      '.fonts/probe-sans/probe-sans-400.woff',
+      '.fonts/probe-sans/probe-sans-700italic.ttf',
+    ];
+
+    function makeAdapter(stats: Map<string, { size: number; mtime: number }>): {
+      adapter: FontAdapter;
+      reads: string[];
+    } {
+      const reads: string[] = [];
+      const adapter: FontAdapter = {
+        list: (path) => Promise.resolve(listSingleSubfolder(files)(path)),
+        stat: (path) => Promise.resolve(stats.get(path) ?? null),
+        readBinary: (path) => {
+          reads.push(path);
+          return Promise.resolve(
+            readFixture(`probe-sans/${path.slice(path.lastIndexOf('/') + 1)}`),
+          );
+        },
+      };
+      return { adapter, reads };
+    }
+
+    function baselineStats(): Map<string, { size: number; mtime: number }> {
+      return new Map(
+        files.map((path, index) => [path, { size: 1000 + index, mtime: 100 + index }]),
+      );
+    }
+
+    it('reuses every unchanged record and parses only the file that changed', async () => {
+      const stats = baselineStats();
+      const full = await buildCache(makeAdapter(stats).adapter, '.fonts');
+
+      // Touch exactly one file: same path, different size and mtime.
+      const touched = '.fonts/probe-sans/probe-sans-400.woff2';
+      stats.set(touched, { size: 9999, mtime: 999 });
+      const { adapter: incrementalAdapter, reads } = makeAdapter(stats);
+
+      const incremental = await buildCache(incrementalAdapter, '.fonts', undefined, full);
+
+      // Only the touched file's bytes should have been read for re-parsing.
+      expect(reads).toStrictEqual([touched]);
+
+      // Every record but the touched one must be byte-identical (same object even),
+      // proving it was reused rather than rebuilt.
+      const fullByPath = new Map(full.faces.map((f) => [f.path, f]));
+      const incrementalByPath = new Map(incremental.faces.map((f) => [f.path, f]));
+      for (const path of files) {
+        if (path === touched) {
+          continue;
+        }
+        expect(incrementalByPath.get(path)).toBe(fullByPath.get(path));
+      }
+
+      // The touched record differs (it was actually re-parsed) but otherwise the
+      // result matches what a full scan of the same (changed) folder would produce.
+      const rebuiltFull = await buildCache(makeAdapter(stats).adapter, '.fonts');
+      expect(incremental.faces.map((f) => f.path)).toStrictEqual(
+        rebuiltFull.faces.map((f) => f.path),
+      );
+      expect(incremental.faces).toStrictEqual(rebuiltFull.faces);
+    });
+
+    it('drops a record whose file no longer exists', async () => {
+      const stats = baselineStats();
+      const full = await buildCache(makeAdapter(stats).adapter, '.fonts');
+
+      stats.delete('.fonts/probe-sans/probe-sans-700italic.ttf');
+      const removedFiles = files.filter((f) => f !== '.fonts/probe-sans/probe-sans-700italic.ttf');
+      const adapter: FontAdapter = {
+        list: (path) => Promise.resolve(listSingleSubfolder(removedFiles)(path)),
+        stat: (path) => Promise.resolve(stats.get(path) ?? null),
+        readBinary: (path) =>
+          Promise.resolve(readFixture(`probe-sans/${path.slice(path.lastIndexOf('/') + 1)}`)),
+      };
+
+      const incremental = await buildCache(adapter, '.fonts', undefined, full);
+
+      expect(
+        [...incremental.faces].map((f) => f.path).sort((a, b) => a.localeCompare(b)),
+      ).toStrictEqual([...removedFiles].sort((a, b) => a.localeCompare(b)));
+    });
+
+    it('does not reuse records from a cache built for a different folder', async () => {
+      const stats = baselineStats();
+      const { adapter } = makeAdapter(stats);
+      const otherFolderCache: FontCache = {
+        version: CACHE_VERSION,
+        folder: '.other-fonts',
+        faces: (await buildCache(adapter, '.fonts')).faces.map((f) => ({ ...f, path: f.path })),
+      };
+      const { adapter: freshAdapter, reads } = makeAdapter(stats);
+
+      await buildCache(freshAdapter, '.fonts', undefined, otherFolderCache);
+
+      // Every file had to be re-read: nothing from the other folder's cache was reused.
+      expect([...reads].sort((a, b) => a.localeCompare(b))).toStrictEqual(
+        [...files].sort((a, b) => a.localeCompare(b)),
+      );
+    });
   });
 });
 

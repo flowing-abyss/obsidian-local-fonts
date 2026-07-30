@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { canRender, capabilitiesFor, detectEngine } from './platform.js';
+import {
+  canRender,
+  capabilitiesFor,
+  detectEngine,
+  OS_ENGINES,
+  SUPPORTED_OSES,
+} from './platform.js';
 
 const IOS_UA =
   'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148';
@@ -69,5 +75,24 @@ describe('canRender', () => {
 
   it('accepts an SVG-only font on WebKit', () => {
     expect(canRender('webkit', ['SVG'])).toBe(true);
+  });
+});
+
+describe('OS_ENGINES', () => {
+  it('maps macOS, Windows, Linux and Android to Chromium', () => {
+    expect(OS_ENGINES.macos).toBe('chromium');
+    expect(OS_ENGINES.windows).toBe('chromium');
+    expect(OS_ENGINES.linux).toBe('chromium');
+    expect(OS_ENGINES.android).toBe('chromium');
+  });
+
+  it('maps iOS to WebKit', () => {
+    expect(OS_ENGINES.ios).toBe('webkit');
+  });
+
+  it('covers every OS in SUPPORTED_OSES, no more and no fewer', () => {
+    expect(Object.keys(OS_ENGINES).sort((a, b) => a.localeCompare(b))).toStrictEqual(
+      [...SUPPORTED_OSES].sort((a, b) => a.localeCompare(b)),
+    );
   });
 });

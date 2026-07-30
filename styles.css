@@ -37,3 +37,62 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   color: var(--text-error);
   font-style: italic;
 }
+
+.local-fonts-os-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35em;
+  margin-block: 0.4em;
+}
+
+.local-fonts-os-badge {
+  border-radius: var(--radius-s);
+  padding: 0.05em 0.5em;
+  font-size: var(--font-ui-smaller);
+  border: 1px solid transparent;
+}
+
+.local-fonts-os-supported {
+  color: var(--text-success);
+  background-color: rgb(var(--color-green-rgb), 0.12);
+}
+
+.local-fonts-os-unsupported {
+  color: var(--text-error);
+  background-color: rgb(var(--color-red-rgb), 0.12);
+}
+
+/* The current device's pill: a subtle, colour-independent marker (not a third colour),
+   so it stays legible alongside the supported/unsupported states above. */
+.local-fonts-os-current {
+  border-color: currentcolor;
+  font-weight: var(--font-semibold);
+}
+
+.local-fonts-sample {
+  font-size: 1.4em;
+  margin-block: 0.5em;
+  overflow-wrap: break-word;
+}
+
+.local-fonts-weight-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35em;
+  margin-block: 0.5em;
+}
+
+.local-fonts-weight-chip {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  padding: 0.05em 0.5em;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-normal);
+}
+
+/* A missing 400 (regular) weight is a gap worth noticing, not just a chip that's absent. */
+.local-fonts-weight-chip-missing {
+  border-style: dashed;
+  color: var(--text-muted);
+  font-style: italic;
+}

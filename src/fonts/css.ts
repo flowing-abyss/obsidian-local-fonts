@@ -17,8 +17,13 @@ const CSS_FORMAT: Record<FontFormat, string> = {
   ttf: 'truetype',
 };
 
-/** Escape a family name for use inside a single-quoted CSS string. */
-function quote(family: string): string {
+/**
+ * Escape a family name for use inside a single-quoted CSS string. Exported so the
+ * settings tab can quote a family the same way when setting a preview element's
+ * `font-family` inline (family names are arbitrary text read out of a font binary,
+ * not something that can be hardcoded in styles.css).
+ */
+export function quote(family: string): string {
   return `'${family.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
 }
 

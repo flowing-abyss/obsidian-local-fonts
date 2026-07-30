@@ -1,4 +1,4 @@
-import { scanFolder, type FontAdapter } from './scanner.js';
+import { collectFiles, extractRecords, type FontAdapter, type FoundFile } from './scanner.js';
 import { CACHE_VERSION, type FaceRecord, type FileStamp, type FontCache } from './types.js';
 
 /**
@@ -26,20 +26,68 @@ export function isCacheStale(
 }
 
 /**
- * Build a fresh cache. Platform-neutral by construction: it stores every face with its
- * full colour-format set and never chooses between competing files. `data.json` syncs
- * across devices, so a cached choice would corrupt other platforms silently.
+ * Index `previous`'s faces by path, but only when it describes the same folder —
+ * reusing a record from a different folder's cache would be reusing bytes for a
+ * path that may not even exist there, or (worse) one that coincidentally does and
+ * means something else.
+ */
+function indexPrevious(
+  previous: FontCache | null | undefined,
+  folder: string,
+): Map<string, FaceRecord> {
+  if (previous?.folder !== folder) {
+    return new Map();
+  }
+  return new Map(previous.faces.map((face) => [face.path, face]));
+}
+
+/**
+ * Build a cache for `folder`, reusing records from `previous` whose path, size and
+ * mtime are unchanged and parsing only what is new or modified.
+ *
+ * A full rescan re-decodes and re-parses every font file, which is the expensive part
+ * (measured live: ~500ms and tens of MB of heap across 44 files) — most of that cost
+ * is unnecessary when only one file actually changed. This still walks the whole
+ * folder (cheap: paths/sizes/mtimes only) so the result's file set and order match
+ * what a full scan would produce; it just skips parsing for files whose cached record
+ * already matches.
+ *
+ * Platform-neutral, like the cache itself: reuse is decided purely from path/size/
+ * mtime, never from anything engine- or OS-dependent, so a record built on one device
+ * and synced to another stays valid to reuse there too.
  */
 export async function buildCache(
   adapter: FontAdapter,
   folder: string,
   onSkip?: (path: string) => void,
+  previous?: FontCache | null,
 ): Promise<FontCache> {
-  return {
-    version: CACHE_VERSION,
-    folder,
-    faces: await scanFolder(adapter, folder, onSkip),
-  };
+  const files = await collectFiles(adapter, folder, onSkip);
+  const previousByPath = indexPrevious(previous, folder);
+
+  const toParse: FoundFile[] = [];
+  const byPath = new Map<string, FaceRecord>();
+  for (const file of files) {
+    const cached = previousByPath.get(file.path);
+    if (cached?.size === file.size && cached.mtime === file.mtime) {
+      byPath.set(file.path, cached);
+    } else {
+      toParse.push(file);
+    }
+  }
+
+  for (const record of await extractRecords(adapter, toParse, onSkip)) {
+    byPath.set(record.path, record);
+  }
+
+  // Re-derive the final order from the walk itself (`files`), not from insertion order
+  // into `byPath`, so a reused record and a freshly parsed one land in exactly the
+  // same place a full scan would have put them.
+  const faces = files
+    .map((file) => byPath.get(file.path))
+    .filter((record): record is FaceRecord => record !== undefined);
+
+  return { version: CACHE_VERSION, folder, faces };
 }
 
 /** Group faces by real family name, each family's faces sorted by weight then style. */

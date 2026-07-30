@@ -41,6 +41,9 @@ describe('LocalFontsSettingTab', () => {
 
   afterEach(() => {
     Platform.isIosApp = false;
+    Platform.isAndroidApp = false;
+    Platform.isLinux = false;
+    Platform.isWin = true;
   });
 
   it('renders exactly seven controls — folder, five roles, hard override', () => {
@@ -533,6 +536,436 @@ describe('LocalFontsSettingTab', () => {
 
     const warning = tab.containerEl.querySelector('.local-fonts-diagnostics .local-fonts-warning');
     expect(warning?.textContent).toContain('disk exploded');
+  });
+
+  describe('weight chips', () => {
+    it('shows one chip per distinct weight present', () => {
+      plugin.settings.cache = {
+        version: 2,
+        folder: '.fonts',
+        faces: [
+          {
+            path: '.fonts/a-300.woff2',
+            format: 'woff2',
+            size: 1,
+            mtime: 1,
+            family: 'Probe Sans',
+            weight: 300,
+            italic: false,
+            colorFormats: [],
+            scripts: [],
+            axes: [],
+            license: null,
+            source: 'name-table',
+          },
+          {
+            path: '.fonts/a-700.woff2',
+            format: 'woff2',
+            size: 1,
+            mtime: 1,
+            family: 'Probe Sans',
+            weight: 700,
+            italic: false,
+            colorFormats: [],
+            scripts: [],
+            axes: [],
+            license: null,
+            source: 'name-table',
+          },
+        ],
+      };
+
+      tab.display();
+
+      const card = tab.containerEl.querySelector('.local-fonts-family');
+      const chips = Array.from(card?.querySelectorAll('.local-fonts-weight-chip') ?? []);
+      const presentChips = chips.filter(
+        (c) => !c.classList.contains('local-fonts-weight-chip-missing'),
+      );
+      expect(presentChips.map((c) => c.textContent)).toStrictEqual(['300', '700']);
+    });
+
+    it('adds a distinctly-styled "missing" chip when 400 is absent', () => {
+      plugin.settings.cache = {
+        version: 2,
+        folder: '.fonts',
+        faces: [
+          {
+            path: '.fonts/a-300.woff2',
+            format: 'woff2',
+            size: 1,
+            mtime: 1,
+            family: 'Probe Sans',
+            weight: 300,
+            italic: false,
+            colorFormats: [],
+            scripts: [],
+            axes: [],
+            license: null,
+            source: 'name-table',
+          },
+        ],
+      };
+
+      tab.display();
+
+      const card = tab.containerEl.querySelector('.local-fonts-family');
+      const missing = card?.querySelector('.local-fonts-weight-chip-missing');
+      expect(missing?.textContent).toContain('400');
+    });
+
+    it('omits the "missing" chip when 400 is present', () => {
+      plugin.settings.cache = {
+        version: 2,
+        folder: '.fonts',
+        faces: [
+          {
+            path: '.fonts/a-400.woff2',
+            format: 'woff2',
+            size: 1,
+            mtime: 1,
+            family: 'Probe Sans',
+            weight: 400,
+            italic: false,
+            colorFormats: [],
+            scripts: [],
+            axes: [],
+            license: null,
+            source: 'name-table',
+          },
+        ],
+      };
+
+      tab.display();
+
+      const card = tab.containerEl.querySelector('.local-fonts-family');
+      expect(card?.querySelector('.local-fonts-weight-chip-missing')).toBeNull();
+    });
+  });
+
+  describe('font sample preview', () => {
+    function withCache(): void {
+      plugin.settings.cache = {
+        version: 2,
+        folder: '.fonts',
+        faces: [
+          {
+            path: '.fonts/a-400.woff2',
+            format: 'woff2',
+            size: 1,
+            mtime: 1,
+            family: 'Probe Sans',
+            weight: 400,
+            italic: false,
+            colorFormats: [],
+            scripts: [],
+            axes: [],
+            license: null,
+            source: 'name-table',
+          },
+        ],
+      };
+    }
+
+    it('renders no sample at all while the card is collapsed', () => {
+      withCache();
+
+      tab.display();
+
+      expect(tab.containerEl.querySelector('.local-fonts-sample')).toBeNull();
+    });
+
+    it('renders the sample, styled in the real family, once the card is expanded', async () => {
+      withCache();
+      tab.display();
+
+      const card = tab.containerEl.querySelector('.local-fonts-family') as HTMLDetailsElement;
+      const summary = card.querySelector('summary');
+      summary?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+      // The `toggle` event is dispatched as a queued task per the HTML spec, not
+      // synchronously with the click that flips `.open` — it needs a turn to fire.
+      await vi.waitFor(() => {
+        expect(tab.containerEl.querySelector('.local-fonts-sample')).not.toBeNull();
+      });
+      const sample = tab.containerEl.querySelector<HTMLElement>('.local-fonts-sample');
+      expect(sample?.style.fontFamily).toContain('Probe Sans');
+    });
+
+    it('does not create a second sample element on repeated expand/collapse', async () => {
+      withCache();
+      tab.display();
+
+      const card = tab.containerEl.querySelector('.local-fonts-family') as HTMLDetailsElement;
+      const summary = card.querySelector('summary');
+      summary?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await vi.waitFor(() => {
+        expect(tab.containerEl.querySelector('.local-fonts-sample')).not.toBeNull();
+      });
+      summary?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      summary?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+      expect(tab.containerEl.querySelectorAll('.local-fonts-sample')).toHaveLength(1);
+    });
+  });
+
+  describe('per-OS support badges', () => {
+    it('shows all five OS pills, in order, all supported for a plain font', () => {
+      plugin.settings.cache = {
+        version: 2,
+        folder: '.fonts',
+        faces: [
+          {
+            path: '.fonts/a-400.woff2',
+            format: 'woff2',
+            size: 1,
+            mtime: 1,
+            family: 'Probe Sans',
+            weight: 400,
+            italic: false,
+            colorFormats: [],
+            scripts: [],
+            axes: [],
+            license: null,
+            source: 'name-table',
+          },
+        ],
+      };
+
+      tab.display();
+
+      const card = tab.containerEl.querySelector('.local-fonts-family');
+      const badges = card?.querySelectorAll('.local-fonts-os-badge');
+      expect(badges).toHaveLength(5);
+      expect(Array.from(badges ?? []).map((b) => b.textContent.trim())).toStrictEqual([
+        expect.stringContaining('macOS'),
+        expect.stringContaining('Windows'),
+        expect.stringContaining('Linux'),
+        expect.stringContaining('Android'),
+        expect.stringContaining('iOS'),
+      ]);
+      for (const badge of Array.from(badges ?? [])) {
+        expect(badge.classList.contains('local-fonts-os-supported')).toBe(true);
+        expect(badge.classList.contains('local-fonts-os-unsupported')).toBe(false);
+      }
+    });
+
+    it('marks Chromium OSes unsupported and iOS supported for an SVG-only colour font', () => {
+      plugin.settings.cache = {
+        version: 2,
+        folder: '.fonts',
+        faces: [
+          {
+            path: '.fonts/emoji.woff2',
+            format: 'woff2',
+            size: 1,
+            mtime: 1,
+            family: 'Probe Emoji',
+            weight: 400,
+            italic: false,
+            colorFormats: ['SVG'],
+            scripts: ['emoji'],
+            axes: [],
+            license: null,
+            source: 'name-table',
+          },
+        ],
+      };
+
+      tab.display();
+
+      const card = tab.containerEl.querySelector('.local-fonts-family');
+      const badges = Array.from(card?.querySelectorAll('.local-fonts-os-badge') ?? []);
+      const byLabel = new Map(badges.map((b) => [b.getAttribute('data-os'), b] as const));
+
+      for (const os of ['macos', 'windows', 'linux', 'android']) {
+        const badge = byLabel.get(os);
+        expect(badge?.classList.contains('local-fonts-os-unsupported')).toBe(true);
+        expect(badge?.classList.contains('local-fonts-os-supported')).toBe(false);
+      }
+      const ios = byLabel.get('ios');
+      expect(ios?.classList.contains('local-fonts-os-supported')).toBe(true);
+    });
+
+    it('conveys support state with a text or glyph cue, not colour alone', () => {
+      plugin.settings.cache = {
+        version: 2,
+        folder: '.fonts',
+        faces: [
+          {
+            path: '.fonts/emoji.woff2',
+            format: 'woff2',
+            size: 1,
+            mtime: 1,
+            family: 'Probe Emoji',
+            weight: 400,
+            italic: false,
+            colorFormats: ['SVG'],
+            scripts: ['emoji'],
+            axes: [],
+            license: null,
+            source: 'name-table',
+          },
+        ],
+      };
+
+      tab.display();
+
+      const card = tab.containerEl.querySelector('.local-fonts-family');
+      const badges = Array.from(card?.querySelectorAll('.local-fonts-os-badge') ?? []);
+      const byLabel = new Map(badges.map((b) => [b.getAttribute('data-os'), b] as const));
+
+      // The supported and unsupported pills must differ in their text content, not just
+      // in a CSS class — a colour-blind user reading only the text must be able to tell.
+      const supportedText = byLabel.get('ios')?.textContent ?? '';
+      const unsupportedText = byLabel.get('macos')?.textContent ?? '';
+      expect(supportedText).not.toBe(unsupportedText.replace('macOS', 'iOS'));
+      expect(supportedText).toMatch(/✓|supported/i);
+      expect(unsupportedText).toMatch(/✕|✗|unsupported|not supported/i);
+    });
+
+    it("marks the family's home OS badge as the user's current platform, distinctly from a colour", () => {
+      // The test-mock Platform defaults to isWin: true.
+      plugin.settings.cache = {
+        version: 2,
+        folder: '.fonts',
+        faces: [
+          {
+            path: '.fonts/a-400.woff2',
+            format: 'woff2',
+            size: 1,
+            mtime: 1,
+            family: 'Probe Sans',
+            weight: 400,
+            italic: false,
+            colorFormats: [],
+            scripts: [],
+            axes: [],
+            license: null,
+            source: 'name-table',
+          },
+        ],
+      };
+
+      tab.display();
+
+      const card = tab.containerEl.querySelector('.local-fonts-family');
+      const badges = Array.from(card?.querySelectorAll('.local-fonts-os-badge') ?? []);
+      const byLabel = new Map(badges.map((b) => [b.getAttribute('data-os'), b] as const));
+
+      expect(byLabel.get('windows')?.classList.contains('local-fonts-os-current')).toBe(true);
+      for (const os of ['macos', 'linux', 'android', 'ios']) {
+        expect(byLabel.get(os)?.classList.contains('local-fonts-os-current')).toBe(false);
+      }
+      // The marker must be discoverable from more than a class name alone (e.g. a
+      // title/aria attribute or distinguishing text), since "not a second colour" was
+      // the whole point.
+      const marker =
+        byLabel.get('windows')?.getAttribute('title') ??
+        byLabel.get('windows')?.getAttribute('aria-label') ??
+        '';
+      expect(marker.length).toBeGreaterThan(0);
+    });
+
+    it('marks iOS as current when Platform.isIosApp is true', () => {
+      Platform.isIosApp = true;
+      plugin.settings.cache = {
+        version: 2,
+        folder: '.fonts',
+        faces: [
+          {
+            path: '.fonts/a-400.woff2',
+            format: 'woff2',
+            size: 1,
+            mtime: 1,
+            family: 'Probe Sans',
+            weight: 400,
+            italic: false,
+            colorFormats: [],
+            scripts: [],
+            axes: [],
+            license: null,
+            source: 'name-table',
+          },
+        ],
+      };
+
+      tab.display();
+
+      const card = tab.containerEl.querySelector('.local-fonts-family');
+      const badges = Array.from(card?.querySelectorAll('.local-fonts-os-badge') ?? []);
+      const byLabel = new Map(badges.map((b) => [b.getAttribute('data-os'), b] as const));
+
+      expect(byLabel.get('ios')?.classList.contains('local-fonts-os-current')).toBe(true);
+      expect(byLabel.get('windows')?.classList.contains('local-fonts-os-current')).toBe(false);
+    });
+
+    it('marks Android as current when Platform.isAndroidApp is true', () => {
+      Platform.isAndroidApp = true;
+      plugin.settings.cache = {
+        version: 2,
+        folder: '.fonts',
+        faces: [
+          {
+            path: '.fonts/a-400.woff2',
+            format: 'woff2',
+            size: 1,
+            mtime: 1,
+            family: 'Probe Sans',
+            weight: 400,
+            italic: false,
+            colorFormats: [],
+            scripts: [],
+            axes: [],
+            license: null,
+            source: 'name-table',
+          },
+        ],
+      };
+
+      tab.display();
+
+      const card = tab.containerEl.querySelector('.local-fonts-family');
+      const badges = Array.from(card?.querySelectorAll('.local-fonts-os-badge') ?? []);
+      const byLabel = new Map(badges.map((b) => [b.getAttribute('data-os'), b] as const));
+
+      expect(byLabel.get('android')?.classList.contains('local-fonts-os-current')).toBe(true);
+      expect(byLabel.get('windows')?.classList.contains('local-fonts-os-current')).toBe(false);
+    });
+
+    it('marks Linux as current when Platform.isWin is false and Platform.isLinux is true', () => {
+      Platform.isWin = false;
+      Platform.isLinux = true;
+      plugin.settings.cache = {
+        version: 2,
+        folder: '.fonts',
+        faces: [
+          {
+            path: '.fonts/a-400.woff2',
+            format: 'woff2',
+            size: 1,
+            mtime: 1,
+            family: 'Probe Sans',
+            weight: 400,
+            italic: false,
+            colorFormats: [],
+            scripts: [],
+            axes: [],
+            license: null,
+            source: 'name-table',
+          },
+        ],
+      };
+
+      tab.display();
+
+      const card = tab.containerEl.querySelector('.local-fonts-family');
+      const badges = Array.from(card?.querySelectorAll('.local-fonts-os-badge') ?? []);
+      const byLabel = new Map(badges.map((b) => [b.getAttribute('data-os'), b] as const));
+
+      expect(byLabel.get('linux')?.classList.contains('local-fonts-os-current')).toBe(true);
+    });
   });
 
   it('sorts families alphabetically regardless of scan order', () => {

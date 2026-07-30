@@ -1,5 +1,6 @@
 import { Platform, PluginSettingTab, Setting, type App } from 'obsidian';
-import { type Engine } from './fonts/platform.js';
+import { quote } from './fonts/css.js';
+import { canRender, OS_ENGINES, SUPPORTED_OSES, type Engine, type OS } from './fonts/platform.js';
 import { isFamilyApplied } from './fonts/probe.js';
 import { explainSelection, type FaceVerdict, type SelectionReason } from './fonts/select.js';
 import type { FaceRecord, VariableAxis } from './fonts/types.js';
@@ -15,6 +16,38 @@ const ROLES: ReadonlyArray<readonly [RoleName, string, string]> = [
 ];
 
 const NONE = '';
+
+const OS_LABELS: Record<OS, string> = {
+  macos: 'macOS',
+  windows: 'Windows',
+  linux: 'Linux',
+  android: 'Android',
+  ios: 'iOS',
+};
+
+/**
+ * Which OS this device is running, for the diagnostics card's "you are here" marker.
+ *
+ * `Platform.isMacOS` alone can't tell macOS apart from iOS/iPadOS: Obsidian's own docs
+ * say it is also true "on a device that pretends to be one (like iPhones and iPads)".
+ * Checking `isIosApp`/`isAndroidApp`/`isWin`/`isLinux` first and falling back to macOS
+ * sidesteps that ambiguity entirely.
+ */
+function currentOS(): OS {
+  if (Platform.isIosApp) {
+    return 'ios';
+  }
+  if (Platform.isAndroidApp) {
+    return 'android';
+  }
+  if (Platform.isWin) {
+    return 'windows';
+  }
+  if (Platform.isLinux) {
+    return 'linux';
+  }
+  return 'macos';
+}
 
 export class LocalFontsSettingTab extends PluginSettingTab {
   /**
@@ -192,6 +225,8 @@ export class LocalFontsSettingTab extends PluginSettingTab {
   ): void {
     const card = parent.createEl('details', { cls: 'local-fonts-family' });
     card.createEl('summary', { cls: 'local-fonts-family-name', text: family });
+    const badgesRow = renderOsBadges(card, faces);
+    renderSample(card, family, badgesRow);
 
     const verdicts = explainSelection(faces, engine);
     const usable = faces.filter((face) => verdicts.get(face.path)?.status !== 'unrenderable');
@@ -202,7 +237,7 @@ export class LocalFontsSettingTab extends PluginSettingTab {
       });
     }
 
-    card.createEl('p', { text: `Weights: ${describeWeights(faces)}` });
+    renderWeightChips(card, faces);
 
     const scripts = [...new Set(faces.flatMap((face) => face.scripts))].sort((a, b) =>
       a.localeCompare(b),
@@ -267,11 +302,95 @@ export class LocalFontsSettingTab extends PluginSettingTab {
   }
 }
 
-/** "300, 400, 700; no 500" — gaps are what users actually need to see. */
-function describeWeights(faces: readonly FaceRecord[]): string {
+/**
+ * Whether at least one of the family's faces can render on the engine `os` runs.
+ * Reuses `canRender` (the same rule `selectFaces`/`explainSelection` use) rather than
+ * reimplementing the capability matrix here — this file must never decide what a
+ * platform can draw on its own.
+ */
+function familySupportsOS(faces: readonly FaceRecord[], os: OS): boolean {
+  const engine = OS_ENGINES[os];
+  return faces.some((face) => canRender(engine, face.colorFormats));
+}
+
+/**
+ * One pill per OS this plugin ships to, green when at least one face renders there and
+ * red otherwise. Colour alone never carries the meaning: each pill's own text says
+ * "supported"/"not supported" too, so it reads the same to a colour-blind user. The
+ * OS matching this device gets `local-fonts-os-current` plus a `title`, a marker that
+ * is deliberately not a third colour.
+ */
+function renderOsBadges(card: HTMLElement, faces: readonly FaceRecord[]): HTMLElement {
+  const here = currentOS();
+  const row = card.createDiv({ cls: 'local-fonts-os-badges' });
+  for (const os of SUPPORTED_OSES) {
+    const supported = familySupportsOS(faces, os);
+    row.createSpan({
+      cls: [
+        'local-fonts-os-badge',
+        supported ? 'local-fonts-os-supported' : 'local-fonts-os-unsupported',
+        ...(os === here ? ['local-fonts-os-current'] : []),
+      ],
+      text: `${supported ? '✓' : '✕'} ${OS_LABELS[os]}`,
+      attr: { 'data-os': os },
+      ...(os === here && { title: 'Your current platform' }),
+    });
+  }
+  return row;
+}
+
+/**
+ * One chip per distinct weight present, plus a distinctly-styled "missing" chip for
+ * 400 when the family has no regular weight — the gap `describeWeights` used to spell
+ * out in prose ("300, 700; no 400") is exactly as visible here, just scannable rather
+ * than read as a sentence.
+ */
+function renderWeightChips(card: HTMLElement, faces: readonly FaceRecord[]): void {
+  const row = card.createDiv({ cls: 'local-fonts-weight-chips' });
   const present = [...new Set(faces.map((face) => face.weight))].sort((a, b) => a - b);
-  const missingRegular = present.includes(400) ? '' : '; no 400';
-  return `${present.join(', ')}${missingRegular}`;
+  for (const weight of present) {
+    row.createSpan({ cls: 'local-fonts-weight-chip', text: String(weight) });
+  }
+  if (!present.includes(400)) {
+    row.createSpan({
+      cls: 'local-fonts-weight-chip local-fonts-weight-chip-missing',
+      text: 'no 400',
+    });
+  }
+}
+
+/** A pangram-ish sample, wide enough in character variety to show off a typeface. */
+const SAMPLE_TEXT = 'The quick brown fox jumps over the lazy dog — 0123456789';
+
+/**
+ * Render the family's own sample text lazily, only once the card is actually expanded.
+ *
+ * This is the whole performance premise of the plugin applied to the diagnostics UI
+ * too: every family's @font-face is already declared globally (selectFaces already
+ * narrowed the cache to one file per family/weight/style, and buildCss emits a rule
+ * for each), but `font-display: swap` means nothing is actually fetched until an
+ * element on screen requests that family. Creating the sample element eagerly for
+ * every card would request every family's face the moment the tab opens — the exact
+ * 43-declared-12-fetched gap this plugin exists to keep small. Listening for the
+ * `<details>` element's own `toggle` event (rather than a click on the summary) means
+ * this also fires for keyboard-driven opens, not just mouse clicks.
+ */
+function renderSample(card: HTMLDetailsElement, family: string, after: HTMLElement): void {
+  let rendered = false;
+  card.addEventListener('toggle', () => {
+    if (!card.open || rendered) {
+      return;
+    }
+    rendered = true;
+    const sample = card.createEl('p', { cls: 'local-fonts-sample', text: SAMPLE_TEXT });
+    // Data-driven, not a hardcoded literal — `family` comes from the scanned font, so
+    // this can't live in styles.css (see `quote`'s own doc comment for why it's exported).
+    sample.style.fontFamily = `${quote(family)}, sans-serif`;
+    // createEl always appends at the end; move it right under the OS badges instead,
+    // so it reads as part of "what is this family", not as an afterthought below the
+    // per-face detail list.
+    card.insertBefore(sample, after.nextSibling);
+  });
 }
 
 function formatSize(bytes: number): string {

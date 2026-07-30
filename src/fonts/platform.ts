@@ -35,6 +35,26 @@ export function capabilitiesFor(engine: Engine): ReadonlySet<ColorFormat> {
   return CAPABILITIES[engine];
 }
 
+/** Every OS the plugin ships to, in the order diagnostics should display them. */
+export const SUPPORTED_OSES = ['macos', 'windows', 'linux', 'android', 'ios'] as const;
+
+export type OS = (typeof SUPPORTED_OSES)[number];
+
+/**
+ * Which rendering engine each OS runs, for the diagnostics UI's per-OS support badges.
+ * macOS, Windows, Linux and Android all run Chromium (Electron on desktop, the
+ * Android WebView on mobile); iOS and iPadOS both run WebKit (WKWebView) — there is
+ * no separate iPadOS entry because it shares iOS's engine and therefore its support
+ * outcome. The single place to correct if a real device ever contradicts this.
+ */
+export const OS_ENGINES: Record<OS, Engine> = {
+  macos: 'chromium',
+  windows: 'chromium',
+  linux: 'chromium',
+  android: 'chromium',
+  ios: 'webkit',
+};
+
 /**
  * A font with no colour tables renders everywhere. A colour font renders only if the
  * engine supports at least one of the formats it carries.

@@ -129,9 +129,14 @@ export default class LocalFontsPlugin extends Plugin {
   /** Rescan the folder and re-apply. Safe to call at any time; never on the startup path. */
   async rescan(): Promise<void> {
     const skipped: string[] = [];
-    const cache = await buildCache(this.adapter(), this.settings.folder, (path) => {
-      skipped.push(path);
-    });
+    const cache = await buildCache(
+      this.adapter(),
+      this.settings.folder,
+      (path) => {
+        skipped.push(path);
+      },
+      this.settings.cache,
+    );
     this.skipped = skipped;
     this.scanError = null;
     // A scan that finds nothing is more likely a bad folder path (renamed/moved) than an

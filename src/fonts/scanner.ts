@@ -15,7 +15,8 @@ export interface FontAdapter {
   readBinary(path: string): Promise<ArrayBuffer>;
 }
 
-interface FoundFile {
+/** One file located by a folder walk, before metadata extraction. */
+export interface FoundFile {
   path: string;
   size: number;
   mtime: number;
@@ -116,29 +117,17 @@ async function collect(folder: string, ctx: CollectContext): Promise<void> {
 }
 
 /**
- * Cheap listing: paths, sizes and mtimes only, no font parsing.
- *
- * Safe to run on startup — used to decide whether the cache is stale without paying
- * for a full scan (which decodes and parses every font file).
+ * Recursively walk the folder and return every font file found, with its identity
+ * (path/size/mtime) and its folder's sibling file list, but without parsing any of
+ * them. The shared first step behind both `listStamps` (a staleness check) and
+ * `scanFolder` (a full parse) — and behind `catalog.buildCache`'s incremental reuse,
+ * which needs the walk but only parses what changed.
  */
-export async function listStamps(adapter: FontAdapter, folder: string): Promise<FileStamp[]> {
-  const found: FoundFile[] = [];
-  await collect(folder, { adapter, out: found, visited: new Set() });
-  return found.map(({ path, size, mtime }) => ({ path, size, mtime }));
-}
-
-/**
- * Walk the folder recursively and extract a record for every font file found.
- *
- * `onSkip`, if given, is called once per file that could not be read or parsed — the
- * settings tab uses it to tell the user a file was dropped, rather than the silence of
- * a `console.warn` no one but a developer will ever open.
- */
-export async function scanFolder(
+export async function collectFiles(
   adapter: FontAdapter,
   folder: string,
   onSkip?: (path: string) => void,
-): Promise<FaceRecord[]> {
+): Promise<FoundFile[]> {
   const found: FoundFile[] = [];
   await collect(folder, {
     adapter,
@@ -146,8 +135,35 @@ export async function scanFolder(
     visited: new Set(),
     ...(onSkip !== undefined && { onSkip }),
   });
+  return found;
+}
 
-  const extracted = await mapLimit(found, CONCURRENCY_LIMIT, async (file) => {
+/**
+ * Cheap listing: paths, sizes and mtimes only, no font parsing.
+ *
+ * Safe to run on startup — used to decide whether the cache is stale without paying
+ * for a full scan (which decodes and parses every font file).
+ */
+export async function listStamps(adapter: FontAdapter, folder: string): Promise<FileStamp[]> {
+  const found = await collectFiles(adapter, folder);
+  return found.map(({ path, size, mtime }) => ({ path, size, mtime }));
+}
+
+/**
+ * Extract a record for each given file. Split out from `scanFolder` so
+ * `catalog.buildCache` can call it with only the subset of files that actually need
+ * (re-)parsing, reusing cached records for the rest.
+ *
+ * `onSkip`, if given, is called once per file that could not be read or parsed — the
+ * settings tab uses it to tell the user a file was dropped, rather than the silence of
+ * a `console.warn` no one but a developer will ever open.
+ */
+export async function extractRecords(
+  adapter: FontAdapter,
+  files: readonly FoundFile[],
+  onSkip?: (path: string) => void,
+): Promise<FaceRecord[]> {
+  const extracted = await mapLimit(files, CONCURRENCY_LIMIT, async (file) => {
     try {
       return await extractMetadata({
         path: file.path,
@@ -166,4 +182,20 @@ export async function scanFolder(
     }
   });
   return extracted.filter((record): record is FaceRecord => record !== null);
+}
+
+/**
+ * Walk the folder recursively and extract a record for every font file found.
+ *
+ * `onSkip`, if given, is called once per file that could not be read or parsed — the
+ * settings tab uses it to tell the user a file was dropped, rather than the silence of
+ * a `console.warn` no one but a developer will ever open.
+ */
+export async function scanFolder(
+  adapter: FontAdapter,
+  folder: string,
+  onSkip?: (path: string) => void,
+): Promise<FaceRecord[]> {
+  const found = await collectFiles(adapter, folder, onSkip);
+  return extractRecords(adapter, found, onSkip);
 }
