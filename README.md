@@ -50,7 +50,10 @@ directly instead of using Obsidian's variables. Icon elements stay untouched.
 
 Every family gets a card listing the weights it has, the scripts it covers, and the
 operating systems that can render it. Each face shows its format, file size, colour
-format, and whether the plugin selected it for this device.
+format, and whether the plugin selected it for this device. The sample line is drawn in
+the family itself, and it loads only once you expand the card.
+
+![A family card showing OS support badges, a sample line, weight chips and per-face details](assets/diagnostics-card.png)
 
 The **Check** button measures what actually rendered on the device you are using. Reach
 for it after changing fonts, especially on a phone.

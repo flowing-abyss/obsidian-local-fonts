@@ -508,7 +508,10 @@ function renderOsBadges(card: HTMLElement, faces: readonly FaceRecord[]): HTMLEl
         supported ? 'local-fonts-os-supported' : 'local-fonts-os-unsupported',
         ...(os === here ? ['local-fonts-os-current'] : []),
       ],
-      text: `${supported ? '✓' : '✕'} ${OS_LABELS[os]}`,
+      // U+2713 CHECK MARK and U+00D7 MULTIPLICATION SIGN are both present in the text
+      // fonts this UI is likely to run in; U+2715 MULTIPLICATION X, used here before, is
+      // absent from IBM Plex and would have been drawn by an unrelated fallback font.
+      text: `${supported ? '✓' : '×'} ${OS_LABELS[os]}`,
       attr: { 'data-os': os },
       ...(os === here && { title: 'Your current platform' }),
     });
@@ -537,7 +540,7 @@ function renderWeightChips(card: HTMLElement, faces: readonly FaceRecord[]): voi
 }
 
 /** A pangram-ish sample, wide enough in character variety to show off a typeface. */
-const SAMPLE_TEXT = 'The quick brown fox jumps over the lazy dog — 0123456789';
+const SAMPLE_TEXT = 'The quick brown fox jumps over the lazy dog · 0123456789';
 
 /**
  * Render the family's own sample text lazily, only once the card is actually expanded.

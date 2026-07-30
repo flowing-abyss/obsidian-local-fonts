@@ -6,9 +6,28 @@ import type { FaceRecord, FontFormat } from './types.js';
  * family to these ranges is what lets it sit FIRST in the stack: first position is
  * required, because on macOS, Windows and iOS the system emoji font otherwise wins and
  * the vault font never renders. Without the range it would also steal Latin digits.
+ *
+ * An earlier version claimed the whole of U+203C-3299, which swept in characters people
+ * type as text rather than as pictures. Checked against Noto Color Emoji's cmap, that
+ * handed the emoji font 45 codepoints outside the pictographic blocks, including U+2122
+ * TRADE MARK SIGN, U+2139 INFORMATION SOURCE, the arrows at U+2194-21AA and U+2934-2935,
+ * and the geometric shapes U+25AA-25FE that notes commonly use as list markers. Those
+ * belong to the text font. Only the clock and media pictographs from that region are
+ * claimed now, listed individually.
  */
-export const EMOJI_UNICODE_RANGE =
-  'U+203C-3299, U+FE0F, U+20E3, U+1F000-1F9FF, U+1FA70-1FAFF, U+2600-27BF, U+2B00-2BFF';
+export const EMOJI_UNICODE_RANGE = [
+  'U+FE0F',
+  'U+20E3',
+  'U+231A-231B',
+  'U+2328',
+  'U+23CF',
+  'U+23E9-23F3',
+  'U+23F8-23FA',
+  'U+2600-27BF',
+  'U+2B00-2BFF',
+  'U+1F000-1F9FF',
+  'U+1FA70-1FAFF',
+].join(', ');
 
 const CSS_FORMAT: Record<FontFormat, string> = {
   woff2: 'woff2',

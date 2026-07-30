@@ -841,7 +841,7 @@ describe('LocalFontsSettingTab', () => {
       const unsupportedText = byLabel.get('macos')?.textContent ?? '';
       expect(supportedText).not.toBe(unsupportedText.replace('macOS', 'iOS'));
       expect(supportedText).toMatch(/✓|supported/i);
-      expect(unsupportedText).toMatch(/✕|✗|unsupported|not supported/i);
+      expect(unsupportedText).toMatch(/×|✕|✗|unsupported|not supported/i);
     });
 
     it("marks the family's home OS badge as the user's current platform, distinctly from a colour", () => {
