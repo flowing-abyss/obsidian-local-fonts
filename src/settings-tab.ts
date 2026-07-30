@@ -1,4 +1,10 @@
-import { Platform, PluginSettingTab, Setting, type App } from 'obsidian';
+import {
+  Platform,
+  PluginSettingTab,
+  Setting,
+  type App,
+  type SettingDefinitionItem,
+} from 'obsidian';
 import { quote } from './fonts/css.js';
 import { canRender, OS_ENGINES, SUPPORTED_OSES, type Engine, type OS } from './fonts/platform.js';
 import { isFamilyApplied } from './fonts/probe.js';
@@ -49,6 +55,39 @@ function currentOS(): OS {
   return 'macos';
 }
 
+/** The `getSettingDefinitions()` control key for a role dropdown, namespaced so it can
+ *  never collide with `folder` or `hardOverride`. */
+function roleControlKey(role: RoleName): string {
+  return `role:${role}`;
+}
+
+/**
+ * Which family names a role's dropdown should offer, and its (possibly overridden)
+ * description — shared by `renderRoles` (the pre-1.13 `display()` path) and
+ * `getSettingDefinitions()` (the 1.13+ declarative path), so the two can never drift
+ * apart on which families are offered for which role.
+ *
+ * The Emoji role is filtered to families with at least one colour-glyph face — only
+ * those are plausible emoji fonts. `scripts.includes('emoji')` is not used for this:
+ * that probe covers U+2600-26FF (miscellaneous symbols), which ordinary text fonts
+ * also cover, so it would let nearly everything through. The other four roles are
+ * unfiltered.
+ */
+function roleOptions(
+  role: RoleName,
+  desc: string,
+  familyNames: readonly string[],
+  emojiFamilyNames: readonly string[],
+): { options: readonly string[]; desc: string } {
+  const isEmoji = role === 'emoji';
+  const options = isEmoji ? emojiFamilyNames : familyNames;
+  const description =
+    isEmoji && emojiFamilyNames.length === 0
+      ? 'No colour-emoji font found in the folder — add one with COLR, CBDT, sbix or SVG glyphs to enable this role.'
+      : desc;
+  return { options, desc: description };
+}
+
 export class LocalFontsSettingTab extends PluginSettingTab {
   /**
    * `runCheck` is async (it awaits each family's font load before measuring — see
@@ -72,22 +111,128 @@ export class LocalFontsSettingTab extends PluginSettingTab {
     this.containerEl.empty();
 
     const families = this.plugin.families();
-    // Obsidian's Platform flags come from the native app shell itself, not a sniffed UA
-    // string, and eslint-plugin-obsidianmd bans reading `navigator` directly. WKWebView
-    // (the iOS/iPadOS app) is the only WebKit target this plugin ships to; Electron
-    // (desktop) and the Android WebView are both Chromium.
-    const engine: Engine = Platform.isIosApp ? 'webkit' : 'chromium';
 
     this.renderFolder();
-    this.renderRoles(
-      [...families.keys()].sort((a, b) => a.localeCompare(b)),
-      [...families]
-        .filter(([, faces]) => faces.some((face) => face.colorFormats.length > 0))
-        .map(([family]) => family)
-        .sort((a, b) => a.localeCompare(b)),
-    );
+    this.renderRoles(this.familyNames(families), this.emojiFamilyNames(families));
     this.renderHardOverride();
-    this.renderDiagnostics(families, engine);
+    this.renderDiagnostics(this.containerEl, families, this.engine());
+  }
+
+  /**
+   * Declarative counterpart to `display()`, for Obsidian 1.13+: same seven controls
+   * (folder, five roles, hard override) plus the diagnostics section, built from the
+   * same `roleOptions`/`renderDiagnosticsBody` the imperative path uses, so the two
+   * can never render different settings or different diagnostics.
+   */
+  override getSettingDefinitions(): SettingDefinitionItem[] {
+    const families = this.plugin.families();
+    const familyNames = this.familyNames(families);
+    const emojiFamilyNames = this.emojiFamilyNames(families);
+    const engine = this.engine();
+
+    return [
+      {
+        name: 'Fonts folder',
+        desc: 'Vault-relative. May be hidden, for example .fonts',
+        control: { type: 'text', key: 'folder', defaultValue: this.plugin.settings.folder },
+      },
+      ...ROLES.map(([role, name, desc]) =>
+        this.roleDefinition(role, name, desc, { familyNames, emojiFamilyNames }),
+      ),
+      {
+        name: 'Hard override',
+        desc: 'Force fonts onto themes that set font-family directly. Icons are left alone.',
+        control: {
+          type: 'toggle',
+          key: 'hardOverride',
+          defaultValue: this.plugin.settings.hardOverride,
+        },
+      },
+      {
+        name: 'Fonts found',
+        render: (setting): void => {
+          setting.setHeading();
+          this.renderDiagnosticsBody(setting.settingEl, families, engine);
+        },
+      },
+    ];
+  }
+
+  override getControlValue(key: string): unknown {
+    if (key === 'folder') {
+      return this.plugin.settings.folder;
+    }
+    if (key === 'hardOverride') {
+      return this.plugin.settings.hardOverride;
+    }
+    const role = ROLES.find(([r]) => roleControlKey(r) === key)?.[0];
+    return role === undefined ? undefined : (this.plugin.settings.roles[role] ?? NONE);
+  }
+
+  override setControlValue(key: string, value: unknown): void | Promise<void> {
+    if (key === 'folder') {
+      return this.commitFolderChange(String(value));
+    }
+    if (key === 'hardOverride') {
+      return this.commitHardOverride(value === true);
+    }
+    const role = ROLES.find(([r]) => roleControlKey(r) === key)?.[0];
+    if (role !== undefined) {
+      return this.commitRoleChange(role, String(value));
+    }
+    return undefined;
+  }
+
+  private familyNames(families: Map<string, FaceRecord[]>): string[] {
+    return [...families.keys()].sort((a, b) => a.localeCompare(b));
+  }
+
+  private emojiFamilyNames(families: Map<string, FaceRecord[]>): string[] {
+    return [...families]
+      .filter(([, faces]) => faces.some((face) => face.colorFormats.length > 0))
+      .map(([family]) => family)
+      .sort((a, b) => a.localeCompare(b));
+  }
+
+  /**
+   * Obsidian's Platform flags come from the native app shell itself, not a sniffed UA
+   * string, and eslint-plugin-obsidianmd bans reading `navigator` directly. WKWebView
+   * (the iOS/iPadOS app) is the only WebKit target this plugin ships to; Electron
+   * (desktop) and the Android WebView are both Chromium.
+   */
+  private engine(): Engine {
+    return Platform.isIosApp ? 'webkit' : 'chromium';
+  }
+
+  private roleDefinition(
+    role: RoleName,
+    name: string,
+    desc: string,
+    families: {
+      readonly familyNames: readonly string[];
+      readonly emojiFamilyNames: readonly string[];
+    },
+  ): SettingDefinitionItem {
+    const { options, desc: description } = roleOptions(
+      role,
+      desc,
+      families.familyNames,
+      families.emojiFamilyNames,
+    );
+    const controlOptions: Record<string, string> = { [NONE]: 'Leave the theme alone' };
+    for (const family of options) {
+      controlOptions[family] = family;
+    }
+    return {
+      name,
+      desc: description,
+      control: {
+        type: 'dropdown',
+        key: roleControlKey(role),
+        options: controlOptions,
+        defaultValue: this.plugin.settings.roles[role] ?? NONE,
+      },
+    };
   }
 
   /** Every one of the seven controls goes through here, so the class that keeps the
@@ -129,24 +274,29 @@ export class LocalFontsSettingTab extends PluginSettingTab {
     this.plugin.settings.folder = folder;
     await this.plugin.saveSettings();
     await this.plugin.rescan();
-    this.display();
+    this.refreshAfterFolderChange();
   }
 
   /**
-   * The Emoji role is filtered to families with at least one colour-glyph face —
-   * only those are plausible emoji fonts. `scripts.includes('emoji')` is not used
-   * for this: that probe covers U+2600-26FF (miscellaneous symbols), which ordinary
-   * text fonts also cover, so it would let nearly everything through. The other
-   * four roles are unfiltered.
+   * The folder change affects which families exist, so both rendering paths need a
+   * full structural refresh, not just a value update. `update()` (which re-reads
+   * `getSettingDefinitions()`) only exists on Obsidian 1.13+, where `display()` is
+   * never called by the framework and calling it manually would duplicate the
+   * declaratively-rendered DOM instead of replacing it — so this picks whichever of
+   * the two the running Obsidian version actually supports, rather than assuming.
    */
+  private refreshAfterFolderChange(): void {
+    const withUpdate = this as unknown as { update?: () => void };
+    if (typeof withUpdate.update === 'function') {
+      withUpdate.update();
+    } else {
+      this.display();
+    }
+  }
+
   private renderRoles(familyNames: readonly string[], emojiFamilyNames: readonly string[]): void {
     for (const [role, name, desc] of ROLES) {
-      const isEmoji = role === 'emoji';
-      const options = isEmoji ? emojiFamilyNames : familyNames;
-      const description =
-        isEmoji && emojiFamilyNames.length === 0
-          ? 'No colour-emoji font found in the folder — add one with COLR, CBDT, sbix or SVG glyphs to enable this role.'
-          : desc;
+      const { options, desc: description } = roleOptions(role, desc, familyNames, emojiFamilyNames);
 
       this.newControl(name, description).addDropdown((dropdown) => {
         dropdown.addOption(NONE, 'Leave the theme alone');
@@ -183,9 +333,36 @@ export class LocalFontsSettingTab extends PluginSettingTab {
     this.plugin.applyFonts();
   }
 
-  private renderDiagnostics(families: Map<string, FaceRecord[]>, engine: Engine): void {
-    const section = this.containerEl.createDiv({ cls: 'local-fonts-diagnostics' });
-    section.createEl('h3', { text: 'Fonts found' });
+  /**
+   * `new Setting(...).setHeading()` rather than a raw `<h3>`: this is the settings
+   * surface's own heading convention, and (unlike a plain element) it is visibly
+   * distinguishable from an actual control — real Obsidian tags both `.setting-item`
+   * and `.setting-item-heading` on it, so "exactly seven *controls*" stays a
+   * meaningful, DOM-verifiable contract even though this heading also lives under
+   * `containerEl`.
+   */
+  private renderDiagnostics(
+    parent: HTMLElement,
+    families: Map<string, FaceRecord[]>,
+    engine: Engine,
+  ): void {
+    new Setting(parent).setName('Fonts found').setHeading();
+    this.renderDiagnosticsBody(parent, families, engine);
+  }
+
+  /**
+   * The body of the diagnostics section, shared verbatim by `renderDiagnostics` (the
+   * pre-1.13 `display()` path, heading included) and `getSettingDefinitions()`'s
+   * `render` callback (the 1.13+ declarative path, which supplies its own heading via
+   * the row `Setting` it's already given) — so the two can never show different
+   * diagnostics.
+   */
+  private renderDiagnosticsBody(
+    parent: HTMLElement,
+    families: Map<string, FaceRecord[]>,
+    engine: Engine,
+  ): void {
+    const section = parent.createDiv({ cls: 'local-fonts-diagnostics' });
 
     const failure = this.plugin.lastScanFailure();
     if (failure !== null) {

@@ -165,10 +165,11 @@ export default defineConfig(
   },
   {
     // Test-only fixture path helper — reads checked-in fonts from disk under Node
-    // (vitest), never imported by plugin source, so it never ships in main.js. Only
-    // needs the two obsidianmd rules relaxed: it doesn't use console or undeclared
-    // globals, so those stay on.
-    files: ['src/fonts/fixtures.ts'],
+    // (vitest). Lives under tests/, not src/, so it never ships in main.js and was
+    // never in scope for the obsidianmd rules to begin with; it only needs Node's
+    // globals so `import.meta.dirname`/`node:fs` type-check without a `no-undef` or
+    // `no-nodejs-modules` complaint.
+    files: ['tests/fixtures.ts'],
     languageOptions: {
       globals: { ...globals.node },
     },
@@ -178,45 +179,16 @@ export default defineConfig(
     },
   },
   {
-    // `no-forbidden-elements` targets plugins shipping *static* CSS through an injected
-    // element ("use a styles.css file instead"). This plugin's CSS is generated at
-    // runtime from @font-face rules for fonts scanned out of the user's own vault, plus
-    // role assignments made in the settings tab — styles.css cannot express either, since
-    // both vary per vault and per user. The primary delivery path (applyViaAdoptedStyleSheet
-    // in main.ts) uses a constructable stylesheet and creates no element at all, so the
-    // rule never fires there. The element created here is a fallback for WebKit below
-    // 16.4 (iOS/iPadOS 16.0–16.3), where `adoptedStyleSheets` doesn't exist and skipping
-    // the fallback would silently leave those users with no fonts.
-    files: ['src/main.ts'],
-    rules: {
-      'obsidianmd/no-forbidden-elements': 'off',
-    },
-  },
-  {
-    // probe.ts measures which font actually rendered by comparing pixel widths, which only
-    // works if the probe element's styles are exactly what the code sets and nothing else —
-    // a CSS class in styles.css could be overridden by a theme (or by the plugin's own
-    // generated font-role CSS) and silently corrupt the measurement. So static inline styles
-    // are the correct tool here, not a workaround. `createSpan` is likewise not an option:
-    // Obsidian patches it onto `Node`/`HTMLElement` at runtime, so it's absent under jsdom
-    // and on any plain `Document` — using it would break the portability this module's
-    // signature promises (it works with any `Document`, in-app or under test).
-    files: ['src/fonts/probe.ts'],
-    rules: {
-      'obsidianmd/no-static-styles-assignment': 'off',
-      'obsidianmd/prefer-create-el': 'off',
-    },
-  },
-  {
     // This spec's `measure()` helpers reimplement src/fonts/probe.ts's technique inside
     // `executeObsidian` callbacks that run live inside a real Obsidian window (not under
     // jsdom), to prove text actually rendered in the chosen font rather than a fallback.
-    // The same reasoning as probe.ts's own override applies: static inline styles are
-    // required so no theme or the plugin's own generated CSS can perturb the
-    // measurement, `createSpan`'s availability inside `executeObsidian`'s serialized,
-    // sandboxed callback is unproven, and the sample text is a font-metrics probe, not
-    // UI copy, so sentence-case / timer-registration conventions for shipped UI don't
-    // apply to it.
+    // Unlike probe.ts itself (which uses styles.css + setCssStyles — see its own doc
+    // comment), static inline styles are required here: the callback body is serialized
+    // and sent into a separate, sandboxed Obsidian process, so it cannot rely on this
+    // repo's styles.css having been loaded there, and `createEl`'s availability inside
+    // that sandboxed callback is unproven. The sample text is also a font-metrics probe,
+    // not UI copy, so sentence-case / timer-registration conventions for shipped UI
+    // don't apply to it.
     files: ['tests/e2e/fonts.e2e.ts'],
     rules: {
       'obsidianmd/no-static-styles-assignment': 'off',
@@ -226,35 +198,20 @@ export default defineConfig(
     },
   },
   {
-    // The "Fonts found" heading sits above the diagnostics cards, which are read-only
-    // information (what was parsed out of the user's font files), not settings — the
-    // settings surface itself is deliberately capped at seven controls (folder, five
-    // roles, hard override) so it can't be confused with the diagnostics below it.
-    // `new Setting(...).setHeading()` would make this heading indistinguishable from an
-    // actual control (and from the "exactly seven controls" contract this file is
-    // tested against), so a plain heading element is the correct choice here, not a
-    // workaround.
-    files: ['src/settings-tab.ts'],
-    rules: {
-      'obsidianmd/settings-tab/no-manual-html-headings': 'off',
-    },
-  },
-  {
-    // `display()` is deprecated since Obsidian 1.13.0 in favour of a declarative
-    // `getSettingDefinitions()` API, but it remains required here: manifest.json's
+    // `display()` is deprecated since Obsidian 1.13.0 in favour of the declarative
+    // `getSettingDefinitions()` API (which this file also implements — see
+    // `getSettingDefinitions()`/`getControlValue()`/`setControlValue()` in
+    // settings-tab.ts, sharing its builders with `display()` so the two can't drift).
+    // `display()` itself must still be kept and must still work: manifest.json's
     // minAppVersion is 1.0.3, and Obsidian's own JSDoc on `display()` says to keep it
-    // as the fallback for versions before 1.13. `getSettingDefinitions()` could express
-    // this file's seven controls, and — via `SettingDefinitionRender`'s
-    // `render: (setting, group) => void | (() => void)`, plus `SettingDefinitionList`
-    // for variable-length entries — could host the diagnostics section too; it is not
-    // being adopted now only because `display()` has to stay regardless of which API
-    // renders the controls. Revisit this override (and consider migrating) once
-    // minAppVersion rises to 1.13.0. Applies to the test file too, since it calls
-    // `tab.display()` directly.
+    // as the fallback for any Obsidian version below 1.13, which does not know about
+    // `getSettingDefinitions()` and will call `display()` directly. This override is
+    // therefore required for as long as minAppVersion stays below 1.13.0, and should
+    // be deleted the moment it rises to or past that. Applies to the test file too,
+    // since it exercises `display()` directly.
     files: ['src/settings-tab.ts', 'src/settings-tab.test.ts'],
     rules: {
       '@typescript-eslint/no-deprecated': 'off',
-      'obsidianmd/settings-tab/prefer-setting-definitions': 'off',
     },
   },
   prettier,

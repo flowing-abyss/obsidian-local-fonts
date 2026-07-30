@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { readFixture } from './fixtures.js';
+import { readFixture } from '../../tests/fixtures.js';
 import type * as MetadataModule from './metadata.js';
 import { listStamps, scanFolder, type FontAdapter } from './scanner.js';
 

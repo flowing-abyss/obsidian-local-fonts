@@ -1,7 +1,7 @@
 import type { PluginManifest } from 'obsidian';
 import { App } from 'obsidian-test-mocks/obsidian';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { readFixture } from './fonts/fixtures.js';
+import { readFixture } from '../tests/fixtures.js';
 import LocalFontsPlugin from './main.js';
 import { DEFAULT_SETTINGS } from './settings.js';
 
@@ -19,18 +19,46 @@ function createPlugin(): LocalFontsPlugin {
   return new LocalFontsPlugin(app.asOriginalType__(), manifest);
 }
 
+/**
+ * Stands in for what Obsidian itself does before the plugin ever runs: load
+ * styles.css as a real stylesheet, marker rule and all. A constructable
+ * `CSSStyleSheet` (not a `<style>` element — this repo's own no-forbidden-elements
+ * rule applies here too, and main.ts must never be the thing creating one) stubbed
+ * directly into `document.styleSheets`, standing in for infrastructure the plugin
+ * never creates itself; main.ts only ever *finds* this sheet.
+ */
+function markerStyleSheet(): CSSStyleSheet {
+  const sheet = new CSSStyleSheet();
+  sheet.replaceSync(':root { --local-fonts-sheet: 1; }');
+  return sheet;
+}
+
 describe('LocalFontsPlugin', () => {
   let plugin: LocalFontsPlugin;
+  /** The stylesheet main.ts's fallback path is expected to find and write into. */
+  let pluginStyleSheet: CSSStyleSheet;
+  /** Backs the `document.styleSheets` stub below; tests may add or remove entries. */
+  let styleSheets: CSSStyleSheet[];
 
   beforeEach(() => {
     plugin = createPlugin();
+    pluginStyleSheet = markerStyleSheet();
+    styleSheets = [pluginStyleSheet];
+    // jsdom's `document.styleSheets` only reflects real `<style>`/`<link>` elements,
+    // which main.ts's fallback path must never create — stubbed as a plain getter
+    // instead, the same technique this file already uses for `adoptedStyleSheets`.
+    Object.defineProperty(document, 'styleSheets', {
+      configurable: true,
+      get: () => styleSheets,
+    });
   });
 
   // jsdom's `document` is shared across every `it` in this file (vitest isolates per
-  // file, not per test). Without this, a test that injects the style element but never
-  // unloads would leave it behind for the next test to trip over.
+  // file, not per test). Without this, a test that injects rules into the fallback
+  // sheet but never unloads would leave them behind for the next test to trip over.
   afterEach(() => {
     plugin.onunload();
+    Reflect.deleteProperty(document, 'styleSheets');
   });
 
   it('falls back to the defaults when nothing was saved', async () => {
@@ -65,15 +93,52 @@ describe('LocalFontsPlugin', () => {
     }).not.toThrow();
   });
 
-  it('injects a style element on load and removes it on unload', async () => {
+  it('inserts generated rules into the plugin stylesheet and clears them on unload', async () => {
+    vi.spyOn(plugin, 'loadData').mockResolvedValue({
+      folder: '.fonts',
+      roles: { text: 'Probe Sans', interface: null, monospace: null, headings: null, emoji: null },
+      hardOverride: false,
+      cache: {
+        version: 1,
+        folder: '.fonts',
+        faces: [
+          {
+            path: '.fonts/probe-sans/probe-sans-400.woff2',
+            format: 'woff2',
+            size: 1,
+            mtime: 1,
+            family: 'Probe Sans',
+            weight: 400,
+            italic: false,
+            colorFormats: [],
+            scripts: [],
+            axes: [],
+            license: null,
+            source: 'name-table',
+          },
+        ],
+      },
+    });
+
     await plugin.onload();
     plugin.applyFonts();
 
-    expect(document.getElementById('local-fonts-style')).not.toBeNull();
+    const rulesAfterLoad = Array.from(pluginStyleSheet.cssRules);
+    expect(rulesAfterLoad.some((rule) => rule.cssText.includes('Probe Sans'))).toBe(true);
 
     plugin.onunload();
 
-    expect(document.getElementById('local-fonts-style')).toBeNull();
+    const rulesAfterUnload = Array.from(pluginStyleSheet.cssRules);
+    expect(rulesAfterUnload.some((rule) => rule.cssText.includes('Probe Sans'))).toBe(false);
+    // The marker rule from styles.css itself must survive — only this plugin's own
+    // rules are removed.
+    expect(
+      rulesAfterUnload.some(
+        (rule) =>
+          rule instanceof CSSStyleRule &&
+          rule.style.getPropertyValue('--local-fonts-sheet').trim() !== '',
+      ),
+    ).toBe(true);
   });
 
   it('does no font I/O during onload, so Obsidian start stays fast', async () => {
@@ -122,16 +187,67 @@ describe('LocalFontsPlugin', () => {
     await plugin.onload();
     plugin.applyFonts();
 
-    const style = document.getElementById('local-fonts-style');
-    expect(style).not.toBeNull();
-    expect(style?.textContent).toContain('Probe Sans');
+    const rules = Array.from(pluginStyleSheet.cssRules);
+    expect(rules.some((rule) => rule.cssText.includes('Probe Sans'))).toBe(true);
   });
 
-  it('does not leave a duplicate style element behind when reloaded in place', async () => {
-    await plugin.onload();
-    await plugin.onload();
+  it('does not accumulate duplicate rules in the plugin stylesheet when reloaded in place', async () => {
+    vi.spyOn(plugin, 'loadData').mockResolvedValue({
+      folder: '.fonts',
+      roles: { text: 'Probe Sans', interface: null, monospace: null, headings: null, emoji: null },
+      hardOverride: false,
+      cache: {
+        version: 1,
+        folder: '.fonts',
+        faces: [
+          {
+            path: '.fonts/probe-sans/probe-sans-400.woff2',
+            format: 'woff2',
+            size: 1,
+            mtime: 1,
+            family: 'Probe Sans',
+            weight: 400,
+            italic: false,
+            colorFormats: [],
+            scripts: [],
+            axes: [],
+            license: null,
+            source: 'name-table',
+          },
+        ],
+      },
+    });
 
-    expect(document.querySelectorAll('#local-fonts-style')).toHaveLength(1);
+    await plugin.onload();
+    const countAfterFirstLoad = pluginStyleSheet.cssRules.length;
+
+    await plugin.onload();
+    const countAfterSecondLoad = pluginStyleSheet.cssRules.length;
+
+    expect(countAfterSecondLoad).toBe(countAfterFirstLoad);
+  });
+
+  it('logs rather than throws when the plugin stylesheet cannot be found', async () => {
+    styleSheets = [];
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await expect(plugin.onload()).resolves.toBeUndefined();
+
+    expect(consoleError).toHaveBeenCalledWith(expect.stringContaining('could not find'));
+  });
+
+  it('skips a stylesheet that throws on cssRules access (e.g. cross-origin) and keeps looking', async () => {
+    const throwingSheet = {
+      get cssRules(): never {
+        throw new DOMException('cannot access rules');
+      },
+    } as unknown as CSSStyleSheet;
+    styleSheets = [throwingSheet, pluginStyleSheet];
+
+    await plugin.onload();
+    plugin.applyFonts();
+
+    expect(pluginStyleSheet.cssRules.length).toBeGreaterThanOrEqual(1);
   });
 
   it('keeps the last-known-good cache when a rescan finds nothing', async () => {
@@ -327,7 +443,9 @@ describe('LocalFontsPlugin', () => {
       await plugin.onload();
       plugin.applyFonts();
 
-      expect(document.getElementById('local-fonts-style')).toBeNull();
+      // The primary path never touches the fallback stylesheet: only the marker rule
+      // that was already there remains.
+      expect(pluginStyleSheet.cssRules).toHaveLength(1);
       expect(document.adoptedStyleSheets).toHaveLength(1);
       expect(document.adoptedStyleSheets[0]?.cssRules[0]?.cssText).toContain('Probe Sans');
     });

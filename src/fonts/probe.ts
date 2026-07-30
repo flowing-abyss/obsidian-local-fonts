@@ -13,17 +13,22 @@ const SAMPLE = 'Съешь ещё этих мягких французских �
  */
 const EPSILON = 0.5;
 
+/**
+ * Everything static (off-screen positioning, `white-space`, `font-size`) lives in
+ * `.local-fonts-probe` in styles.css, so a theme or this plugin's own generated CSS has
+ * no plausible rule to collide with. Only `font-family` — the one thing that varies per
+ * call — is set from code, through `setCssStyles` (the sanctioned API for a dynamic
+ * inline style, not a raw `.style.x =` assignment).
+ *
+ * `createEl`/`setCssStyles` are Obsidian's own DOM helpers, patched onto `Node.prototype`/
+ * `HTMLElement.prototype` at runtime in the app. `obsidian-test-mocks` (this project's
+ * jsdom test harness) patches the same prototypes the same way via its vitest setup file,
+ * so this one code path is genuinely exercised in both environments — no jsdom-only
+ * fallback is needed here.
+ */
 function widthOf(doc: Document, fontFamily: string, sample: string): number {
-  const el = doc.createElement('span');
-  el.className = 'local-fonts-probe';
-  el.textContent = sample;
-  el.style.position = 'absolute';
-  el.style.left = '-9999px';
-  el.style.top = '-9999px';
-  el.style.whiteSpace = 'pre';
-  el.style.fontSize = '64px';
-  el.style.fontFamily = fontFamily;
-  doc.body.appendChild(el);
+  const el = doc.body.createSpan({ cls: 'local-fonts-probe', text: sample });
+  el.setCssStyles({ fontFamily });
   try {
     return el.getBoundingClientRect().width;
   } finally {

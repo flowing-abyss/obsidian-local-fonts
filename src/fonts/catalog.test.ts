@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { readFixture } from '../../tests/fixtures.js';
 import { buildCache, groupIntoFamilies, isCacheStale } from './catalog.js';
-import { readFixture } from './fixtures.js';
 import type { FontAdapter } from './scanner.js';
 import { CACHE_VERSION, type FaceRecord, type FontCache } from './types.js';
 

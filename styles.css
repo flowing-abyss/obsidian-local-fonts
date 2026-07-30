@@ -5,6 +5,34 @@ prefer Obsidian's CSS custom properties over hardcoded colors, so the plugin fol
 the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interface/CSS
 */
 
+/*
+ * Marker declaration only — never read as a real custom property. src/main.ts's WebKit
+ * <16.4 fallback (adoptedStyleSheets is the primary path everywhere else) needs to find
+ * *this* stylesheet among document.styleSheets to inject generated @font-face/role rules
+ * into, without creating any element itself. Matching on this property's presence is
+ * reliable regardless of what href or index Obsidian loads this file at; matching on
+ * href or index would not be.
+ */
+:root {
+  --local-fonts-sheet: 1;
+}
+
+/*
+ * Off-screen, fixed-metrics element for src/fonts/probe.ts's font-detection technique:
+ * it measures a span's rendered width in the requested family against a guaranteed-
+ * missing one, so this element's geometry must never move under it. Only the dynamic
+ * `font-family` is set from code (via setCssStyles) — everything that must stay fixed
+ * lives here, under a selector specific enough that no theme or this plugin's own
+ * generated font-role CSS can plausibly override it.
+ */
+.local-fonts-probe {
+  position: absolute;
+  left: -9999px;
+  top: -9999px;
+  white-space: pre;
+  font-size: 64px;
+}
+
 .local-fonts-family {
   margin-block: 0.5em;
 }

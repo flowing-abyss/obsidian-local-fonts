@@ -1,4 +1,10 @@
-import { Platform, type PluginManifest } from 'obsidian';
+import {
+  Platform,
+  Setting,
+  type PluginManifest,
+  type SettingDefinitionItem,
+  type SettingGroup,
+} from 'obsidian';
 import { App } from 'obsidian-test-mocks/obsidian';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import LocalFontsPlugin from './main.js';
@@ -49,14 +55,27 @@ describe('LocalFontsSettingTab', () => {
   it('renders exactly seven controls — folder, five roles, hard override', () => {
     tab.display();
 
-    expect(tab.containerEl.querySelectorAll('.setting-item')).toHaveLength(7);
+    expect(
+      tab.containerEl.querySelectorAll('.setting-item:not(.setting-item-heading)'),
+    ).toHaveLength(7);
   });
 
   it('is idempotent, so reopening settings does not stack duplicate controls', () => {
     tab.display();
     tab.display();
 
-    expect(tab.containerEl.querySelectorAll('.setting-item')).toHaveLength(7);
+    expect(
+      tab.containerEl.querySelectorAll('.setting-item:not(.setting-item-heading)'),
+    ).toHaveLength(7);
+  });
+
+  it('renders the diagnostics heading as a Setting heading, not a raw element', () => {
+    tab.display();
+
+    const heading = tab.containerEl.querySelector('.setting-item-heading');
+    expect(heading?.textContent).toContain('Fonts found');
+    // A heading is not one of the seven controls the test above counts.
+    expect(heading?.classList.contains('setting-item')).toBe(false);
   });
 
   it('tells the user the folder is empty rather than showing nothing', () => {
@@ -1385,8 +1404,172 @@ describe('LocalFontsSettingTab', () => {
       );
       expect(emojiOptions).toStrictEqual(['']);
 
-      const emojiControl = tab.containerEl.querySelectorAll('.setting-item')[5];
+      const emojiControl = tab.containerEl.querySelectorAll(
+        '.setting-item:not(.setting-item-heading)',
+      )[5];
       expect(emojiControl?.textContent).toContain('No colour-emoji font found');
+    });
+  });
+
+  describe('the declarative settings API (Obsidian 1.13+)', () => {
+    function definitions(): SettingDefinitionItem[] {
+      return tab.getSettingDefinitions();
+    }
+
+    it('describes the same seven controls as display(), plus one render definition for diagnostics', () => {
+      const defs = definitions();
+
+      expect(defs).toHaveLength(8);
+      expect(defs.map((def) => ('name' in def ? def.name : null))).toStrictEqual([
+        'Fonts folder',
+        'Text',
+        'Interface',
+        'Monospace',
+        'Headings',
+        'Emoji',
+        'Hard override',
+        'Fonts found',
+      ]);
+      const controlTypes = defs
+        .slice(0, 7)
+        .map((def) => ('control' in def ? def.control.type : null));
+      expect(controlTypes).toStrictEqual([
+        'text',
+        'dropdown',
+        'dropdown',
+        'dropdown',
+        'dropdown',
+        'dropdown',
+        'toggle',
+      ]);
+      const diagnostics = defs[7];
+      expect(diagnostics !== undefined && 'render' in diagnostics).toBe(true);
+    });
+
+    it('offers only colour-glyph families for the Emoji dropdown, matching renderRoles', () => {
+      plugin.settings.cache = {
+        version: 2,
+        folder: '.fonts',
+        faces: [
+          {
+            path: '.fonts/probe-emoji/probe-emoji.woff2',
+            format: 'woff2',
+            size: 1,
+            mtime: 1,
+            family: 'Probe Emoji',
+            weight: 400,
+            italic: false,
+            colorFormats: ['COLR0'],
+            scripts: ['emoji'],
+            axes: [],
+            license: null,
+            source: 'name-table',
+          },
+        ],
+      };
+
+      const emojiDef = definitions()[5];
+      const control =
+        emojiDef !== undefined && 'control' in emojiDef ? emojiDef.control : undefined;
+      expect(control?.type === 'dropdown' ? Object.keys(control.options) : null).toStrictEqual([
+        '',
+        'Probe Emoji',
+      ]);
+    });
+
+    it('getControlValue reads the current folder, roles and hardOverride, and returns undefined for an unknown key', () => {
+      plugin.settings.roles.text = 'Probe Sans';
+      plugin.settings.hardOverride = true;
+
+      expect(tab.getControlValue('folder')).toBe(plugin.settings.folder);
+      expect(tab.getControlValue('role:text')).toBe('Probe Sans');
+      expect(tab.getControlValue('role:interface')).toBe('');
+      expect(tab.getControlValue('hardOverride')).toBe(true);
+      expect(tab.getControlValue('nonsense')).toBeUndefined();
+    });
+
+    it('setControlValue commits a folder change through the same path as the text field', async () => {
+      const rescan = vi.spyOn(plugin, 'rescan').mockResolvedValue();
+      vi.spyOn(plugin, 'saveSettings').mockResolvedValue();
+
+      await tab.setControlValue('folder', '.fonts2');
+
+      expect(plugin.settings.folder).toBe('.fonts2');
+      expect(rescan).toHaveBeenCalledTimes(1);
+    });
+
+    it('calls update() instead of display() after a folder change, when running under Obsidian 1.13+', async () => {
+      vi.spyOn(plugin, 'rescan').mockResolvedValue();
+      vi.spyOn(plugin, 'saveSettings').mockResolvedValue();
+      const display = vi.spyOn(tab, 'display');
+      // Obsidian 1.13+ adds `update()` to the base SettingTab class; the test mock's
+      // base class predates that API, so it's stubbed on directly to exercise the
+      // branch that picks it over `display()`.
+      const update = vi.fn();
+      (tab as unknown as { update: () => void }).update = update;
+
+      await tab.setControlValue('folder', '.fonts3');
+
+      expect(update).toHaveBeenCalledTimes(1);
+      expect(display).not.toHaveBeenCalled();
+    });
+
+    it('setControlValue commits a role change through the same path as the dropdown', async () => {
+      vi.spyOn(plugin, 'saveSettings').mockResolvedValue();
+      const applyFonts = vi.spyOn(plugin, 'applyFonts').mockImplementation(() => undefined);
+
+      await tab.setControlValue('role:headings', 'Probe Sans');
+
+      expect(plugin.settings.roles.headings).toBe('Probe Sans');
+      expect(applyFonts).toHaveBeenCalled();
+    });
+
+    it('setControlValue commits hardOverride through the same path as the toggle', async () => {
+      vi.spyOn(plugin, 'saveSettings').mockResolvedValue();
+      vi.spyOn(plugin, 'applyFonts').mockImplementation(() => undefined);
+
+      await tab.setControlValue('hardOverride', true);
+
+      expect(plugin.settings.hardOverride).toBe(true);
+    });
+
+    it('setControlValue does nothing and does not throw for an unknown key', () => {
+      expect(() => tab.setControlValue('nonsense', 'anything')).not.toThrow();
+      expect(tab.setControlValue('nonsense', 'anything')).toBeUndefined();
+    });
+
+    it('the diagnostics render definition marks its row as a heading and renders the same body display() does', () => {
+      plugin.settings.cache = {
+        version: 2,
+        folder: '.fonts',
+        faces: [
+          {
+            path: '.fonts/a-400.woff2',
+            format: 'woff2',
+            size: 1,
+            mtime: 1,
+            family: 'Probe Sans',
+            weight: 400,
+            italic: false,
+            colorFormats: [],
+            scripts: [],
+            axes: [],
+            license: null,
+            source: 'name-table',
+          },
+        ],
+      };
+      const diagnostics = definitions()[7];
+      if (diagnostics === undefined || !('render' in diagnostics)) {
+        throw new Error('expected a render definition');
+      }
+
+      const setting = new Setting(document.body.createDiv());
+      diagnostics.render(setting, {} as unknown as SettingGroup);
+
+      expect(setting.settingEl.classList.contains('setting-item-heading')).toBe(true);
+      const card = setting.settingEl.querySelector('.local-fonts-family');
+      expect(card?.querySelector('summary')?.textContent).toBe('Probe Sans');
     });
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFixture } from './fixtures.js';
+import { readFixture } from '../../tests/fixtures.js';
 import { extractMetadata } from './metadata.js';
 import { parseSfnt } from './sfnt.js';
 

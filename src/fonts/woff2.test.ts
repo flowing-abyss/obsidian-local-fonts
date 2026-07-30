@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFixture } from './fixtures.js';
+import { readFixture } from '../../tests/fixtures.js';
 import { parseSfnt } from './sfnt.js';
 import { decodeWoff2, readWoff2TableTags, woff2ColorFormats } from './woff2.js';
 

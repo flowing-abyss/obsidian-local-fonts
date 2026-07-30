@@ -9,22 +9,88 @@ import { LocalFontsSettingTab } from './settings-tab.js';
 import { DEFAULT_SETTINGS, type PluginSettings } from './settings.js';
 import { mergeSettings } from './utils/merge-settings.js';
 
-const STYLE_ID = 'local-fonts-style';
-
 /**
- * `adoptedStyleSheets` needs Chromium 73+ or WebKit 16.4+. Obsidian ships to iOS
- * 16.0–16.3 devices, where this is absent — feature-detect rather than assume.
+ * `adoptedStyleSheets` needs Chromium 73+ or WebKit 16.4+. Obsidian's own minimum is
+ * iOS/iPadOS 14.5 (per the App Store listing), which is below that — so real installs
+ * on iOS/iPadOS 14.5–16.3 lack it. Feature-detect rather than assume.
  */
 function supportsAdoptedStyleSheets(): boolean {
   return 'adoptedStyleSheets' in document && typeof CSSStyleSheet === 'function';
+}
+
+/**
+ * Marker custom property declared in styles.css (`:root { --local-fonts-sheet: 1 }`),
+ * used to find this plugin's own stylesheet among `document.styleSheets` for the
+ * fallback path below. Matching on content, rather than `href` or position, survives
+ * Obsidian bundling this file under whatever path or index it chooses.
+ */
+const SHEET_MARKER_PROPERTY = '--local-fonts-sheet';
+
+/**
+ * Locates this plugin's own stylesheet — the one Obsidian loaded from styles.css —
+ * among every stylesheet in the document, by looking for `SHEET_MARKER_PROPERTY`. Used
+ * only by the WebKit-below-16.4 fallback, to inject generated CSS via `insertRule`
+ * without creating any element (`no-forbidden-elements` exists precisely to stop a
+ * plugin from doing that).
+ */
+function findPluginStyleSheet(): CSSStyleSheet | null {
+  for (const sheet of Array.from(document.styleSheets)) {
+    try {
+      const hasMarker = Array.from(sheet.cssRules).some(
+        (rule) =>
+          rule instanceof CSSStyleRule &&
+          rule.style.getPropertyValue(SHEET_MARKER_PROPERTY).trim() !== '',
+      );
+      if (hasMarker) {
+        return sheet;
+      }
+    } catch {
+      // A cross-origin stylesheet throws on `cssRules` access; it is never this
+      // plugin's own, so treat it the same as "no marker found" and keep looking.
+    }
+  }
+  return null;
+}
+
+/**
+ * Splits a flat run of top-level CSS rules (as produced by `buildCss`: `@font-face`
+ * blocks and plain selector blocks, never nested) into one string per rule, suitable
+ * for individual `CSSStyleSheet.insertRule` calls — which, unlike `replaceSync`, accept
+ * only a single rule at a time. Tracks brace depth rather than splitting on blank lines,
+ * so it stays correct regardless of `buildCss`'s exact formatting.
+ */
+function splitCssRules(css: string): string[] {
+  const rules: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < css.length; i++) {
+    const ch = css[i];
+    if (ch === '{') {
+      depth += 1;
+      continue;
+    }
+    if (ch !== '}') {
+      continue;
+    }
+    depth -= 1;
+    if (depth !== 0) {
+      continue;
+    }
+    rules.push(css.slice(start, i + 1).trim());
+    start = i + 1;
+  }
+  return rules.filter((rule) => rule !== '');
 }
 
 export default class LocalFontsPlugin extends Plugin {
   override settings!: PluginSettings;
   /** Primary path: a constructable stylesheet, adopted directly by the document. */
   private sheet: CSSStyleSheet | null = null;
-  /** Fallback for WebKit below 16.4, where the sheet above doesn't exist. */
-  private styleEl: HTMLStyleElement | null = null;
+  /** Fallback for WebKit below 16.4: this plugin's own stylesheet, found once and reused. */
+  private fallbackSheet: CSSStyleSheet | null = null;
+  /** How many rules at the tail of `fallbackSheet` this plugin inserted, so a reapply
+   *  removes exactly those and never touches styles.css's own static rules. */
+  private fallbackRuleCount = 0;
   /** Paths dropped by the most recent scan, surfaced by the settings tab. */
   private skipped: string[] = [];
   /** Message from the most recent failed scan, surfaced by the settings tab. */
@@ -56,8 +122,20 @@ export default class LocalFontsPlugin extends Plugin {
       document.adoptedStyleSheets = document.adoptedStyleSheets.filter((s) => s !== sheet);
     }
     this.sheet = null;
-    this.styleEl?.remove();
-    this.styleEl = null;
+    this.clearFallbackRules();
+    this.fallbackSheet = null;
+  }
+
+  /** Removes exactly the rules this plugin inserted into `fallbackSheet`, leaving every
+   *  rule that was already in styles.css (including the marker) untouched. */
+  private clearFallbackRules(): void {
+    if (this.fallbackSheet === null) {
+      return;
+    }
+    for (let i = 0; i < this.fallbackRuleCount; i++) {
+      this.fallbackSheet.deleteRule(this.fallbackSheet.cssRules.length - 1);
+    }
+    this.fallbackRuleCount = 0;
   }
 
   async saveSettings(): Promise<void> {
@@ -85,7 +163,7 @@ export default class LocalFontsPlugin extends Plugin {
     if (supportsAdoptedStyleSheets()) {
       this.applyViaAdoptedStyleSheet(css);
     } else {
-      this.applyViaStyleElement(css);
+      this.applyViaInsertRule(css);
     }
   }
 
@@ -120,10 +198,30 @@ export default class LocalFontsPlugin extends Plugin {
     }
   }
 
-  /** Reuses a single element across repeated calls so a stale one never lingers. */
-  private applyViaStyleElement(css: string): void {
-    this.styleEl ??= document.head.createEl('style', { attr: { id: STYLE_ID } });
-    this.styleEl.textContent = css;
+  /**
+   * No element is created here either: this plugin's own stylesheet (loaded by
+   * Obsidian from styles.css) is located once via `findPluginStyleSheet` and reused,
+   * and each call replaces exactly the rules the previous call inserted — via
+   * `insertRule`/`deleteRule`, since a non-constructed stylesheet's `replaceSync`
+   * throws.
+   */
+  private applyViaInsertRule(css: string): void {
+    this.fallbackSheet ??= findPluginStyleSheet();
+    const sheet = this.fallbackSheet;
+    if (sheet === null) {
+      // Nothing to inject into; surfaced here rather than thrown, since a rescan or a
+      // settings change must not crash the plugin over a stylesheet that failed to load.
+      console.error(
+        '[local-fonts] could not find the plugin stylesheet among document.styleSheets; fonts will not apply on this device',
+      );
+      return;
+    }
+    this.clearFallbackRules();
+    const rules = splitCssRules(css);
+    for (const rule of rules) {
+      sheet.insertRule(rule, sheet.cssRules.length);
+    }
+    this.fallbackRuleCount = rules.length;
   }
 
   /** Rescan the folder and re-apply. Safe to call at any time; never on the startup path. */

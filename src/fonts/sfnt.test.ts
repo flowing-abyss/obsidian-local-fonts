@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFixture } from './fixtures.js';
+import { readFixture } from '../../tests/fixtures.js';
 import { colorFormatsFromTags, parseSfnt, readTableDirectory } from './sfnt.js';
 
 /**
