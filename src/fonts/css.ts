@@ -39,14 +39,27 @@ function fontFace(face: FaceRecord, url: string, isEmoji: boolean): string {
 }
 
 /**
+ * CSS-wide keywords are only valid as the *entire* value of a property, never as one
+ * item in a comma-separated font-family list. `font-family: 'X', inherit` is invalid
+ * CSS — the whole declaration is dropped at parse/computed-value time, silently
+ * losing 'X' too. `stack()` must never append one of these as a trailing "fallback".
+ */
+const CSS_WIDE_KEYWORDS = new Set(['inherit', 'initial', 'unset', 'revert', 'revert-layer']);
+
+/**
  * Emoji first (see EMOJI_UNICODE_RANGE), then the role family, then the theme's own
  * value. Skips the emoji entry when it is the same family as the role, so a family
  * assigned to both `emoji` and this role does not appear twice in the stack.
+ *
+ * `fallback` is omitted entirely when it is a CSS-wide keyword (e.g. "inherit" for
+ * the headings role): an unresolvable family already falls through to whatever the
+ * cascade provides, so no trailing generic is needed, and appending one as a list
+ * item would make the whole value invalid (see CSS_WIDE_KEYWORDS).
  */
 function stack(family: string, emoji: string | null, fallback: string): string {
   const parts =
     emoji !== null && emoji !== family ? [quote(emoji), quote(family)] : [quote(family)];
-  return `${parts.join(', ')}, ${fallback}`;
+  return CSS_WIDE_KEYWORDS.has(fallback) ? parts.join(', ') : `${parts.join(', ')}, ${fallback}`;
 }
 
 const HEADING_VARIABLES = [
@@ -152,13 +165,25 @@ function buildHardOverrides(roles: RoleAssignments): string {
     );
   }
   if (roles.monospace !== null) {
+    // Scoped to code itself, not `.cm-editor .cm-content` — that selector is the
+    // *entire* editor content area, so with !important it forced every paragraph,
+    // heading and list in Live Preview monospace. `code`/`pre` cover reading view;
+    // `.cm-inline-code` and `.cm-line.HyperMD-codeblock` are Obsidian's own classes
+    // for inline code and fenced code-block lines in Live Preview (verified against
+    // app.css — see the code-review report for this fix).
     rules.push(
-      `.cm-editor .cm-content,\ncode,\npre {\n  font-family: ${stack(roles.monospace, emoji, 'monospace')} !important;\n}`,
+      `code,\npre,\n.cm-inline-code,\n.cm-line.HyperMD-codeblock {\n  font-family: ${stack(roles.monospace, emoji, 'monospace')} !important;\n}`,
     );
   }
   if (roles.headings !== null) {
+    // `h1`..`h6` cover reading view only. Live Preview never renders headings as
+    // heading elements — it marks the `.cm-line` div with `.HyperMD-header-1`
+    // through `.HyperMD-header-6` instead, and the note's own title (which Obsidian
+    // treats as a heading) is `.inline-title`. Verified against a running app's own
+    // app.css, which pairs `h1, .markdown-rendered h1` with
+    // `.HyperMD-header-1, .inline-title h1, .HyperMD-list-line .cm-header-1`.
     rules.push(
-      `h1, h2, h3, h4, h5, h6 {\n  font-family: ${stack(roles.headings, emoji, 'inherit')} !important;\n}`,
+      `h1, h2, h3, h4, h5, h6,\n.HyperMD-header-1, .HyperMD-header-2, .HyperMD-header-3, .HyperMD-header-4, .HyperMD-header-5, .HyperMD-header-6,\n.inline-title {\n  font-family: ${stack(roles.headings, emoji, 'inherit')} !important;\n}`,
     );
   }
   if (rules.length > 0) {

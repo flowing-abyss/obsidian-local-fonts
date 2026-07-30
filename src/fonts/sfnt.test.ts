@@ -70,6 +70,58 @@ function cmapFormat4(segments: Array<{ start: number; end: number }>): Uint8Arra
   return bytes;
 }
 
+/**
+ * A `name` table with one record per given (nameId, text) pair, all platform 3
+ * (Windows, UTF-16BE) — enough to exercise family/subfamily/typographic-family/
+ * typographic-subfamily combinations without needing a real font binary.
+ */
+function buildNameTable(records: ReadonlyArray<readonly [number, string]>): Uint8Array {
+  const encoded = records.map(([id, text]) => {
+    const bytes = new Uint8Array(text.length * 2);
+    for (let i = 0; i < text.length; i++) {
+      bytes[i * 2] = 0;
+      bytes[i * 2 + 1] = text.charCodeAt(i);
+    }
+    return { id, bytes };
+  });
+  const headerSize = 6;
+  const recordSize = 12;
+  const stringOffset = headerSize + recordSize * encoded.length;
+  let cursor = 0;
+  const placed = encoded.map((e) => {
+    const offset = cursor;
+    cursor += e.bytes.byteLength;
+    return { ...e, offset };
+  });
+  const buf = new Uint8Array(stringOffset + cursor);
+  const view = new DataView(buf.buffer);
+  view.setUint16(0, 0); // format
+  view.setUint16(2, placed.length); // count
+  view.setUint16(4, stringOffset);
+  placed.forEach((rec, i) => {
+    const base = headerSize + i * recordSize;
+    view.setUint16(base, 3); // platformID: Windows
+    view.setUint16(base + 2, 1); // encodingID
+    view.setUint16(base + 4, 0x0409); // languageID
+    view.setUint16(base + 6, rec.id);
+    view.setUint16(base + 8, rec.bytes.byteLength);
+    view.setUint16(base + 10, rec.offset);
+    buf.set(rec.bytes, stringOffset + rec.offset);
+  });
+  return buf;
+}
+
+const OS2_LENGTH = 64;
+
+/** A full-length OS/2 table carrying just usWeightClass and the italic fsSelection bit. */
+function buildOs2Full(weight: number, italic: boolean): Uint8Array {
+  const os2 = new Uint8Array(OS2_LENGTH);
+  const view = new DataView(os2.buffer);
+  view.setUint16(4, weight);
+  view.setUint16(62, italic ? 0x01 : 0x00);
+  return os2;
+}
+
 describe('readTableDirectory', () => {
   it('finds the tables of a real ttf', () => {
     const dir = readTableDirectory(readFixture('probe-sans/probe-sans-400.ttf'));
@@ -383,5 +435,202 @@ describe('parseSfnt', () => {
     const info = parseSfnt(buildSfnt([{ tag: 'fvar', data: fvar }]));
 
     expect(info.axes).toStrictEqual([{ tag: 'wght', min: 100, default: 400, max: 900 }]);
+  });
+});
+
+describe('parseSfnt legacy family name recovery (no ID16)', () => {
+  it('strips a trailing weight token from ID1 when it matches the actual weight', () => {
+    // Real IBM Plex Serif data: ID1 = 'IBM Plex Serif Thin', ID2 = 'Regular',
+    // no ID16/ID17, usWeightClass = 100. Without recovery this becomes its own
+    // "family", fragmenting one typeface into six in the settings dropdown.
+    const name = buildNameTable([
+      [1, 'IBM Plex Serif Thin'],
+      [2, 'Regular'],
+    ]);
+    const info = parseSfnt(
+      buildSfnt([
+        { tag: 'name', data: name },
+        { tag: 'OS/2', data: buildOs2Full(100, false) },
+      ]),
+    );
+
+    expect(info.family).toBe('IBM Plex Serif');
+  });
+
+  it('recognises a two-word style token (SemiBold written with a space)', () => {
+    const name = buildNameTable([
+      [1, 'Bodoni Moda Semi Bold'],
+      [2, 'Regular'],
+    ]);
+    const info = parseSfnt(
+      buildSfnt([
+        { tag: 'name', data: name },
+        { tag: 'OS/2', data: buildOs2Full(600, false) },
+      ]),
+    );
+
+    expect(info.family).toBe('Bodoni Moda');
+  });
+
+  it('does not strip a trailing word that only looks like a weight token', () => {
+    // "Black Ops One" at weight 400: "Black" maps to 900, which does not match
+    // the face's actual weight, so it must not be treated as a style token.
+    const name = buildNameTable([
+      [1, 'Black Ops One'],
+      [2, 'Regular'],
+    ]);
+    const info = parseSfnt(
+      buildSfnt([
+        { tag: 'name', data: name },
+        { tag: 'OS/2', data: buildOs2Full(400, false) },
+      ]),
+    );
+
+    expect(info.family).toBe('Black Ops One');
+  });
+
+  it('leaves the family alone (uses ID16) when the typographic family is present', () => {
+    const name = buildNameTable([
+      [1, 'IBM Plex Sans Thin'],
+      [2, 'Regular'],
+      [16, 'IBM Plex Sans'],
+      [17, 'Thin'],
+    ]);
+    const info = parseSfnt(
+      buildSfnt([
+        { tag: 'name', data: name },
+        { tag: 'OS/2', data: buildOs2Full(250, false) },
+      ]),
+    );
+
+    expect(info.family).toBe('IBM Plex Sans');
+  });
+});
+
+describe('parseSfnt weight recovery from style tokens (broken usWeightClass)', () => {
+  it('prefers the weight implied by ID17 over a colliding usWeightClass', () => {
+    // Real IBM Plex Sans data: both the Thin and ExtraLight faces report
+    // usWeightClass = 250, which collapses two distinct faces onto one selection
+    // key downstream. ID17 ('Thin' / 'ExtraLight') disambiguates them.
+    const thin = buildNameTable([
+      [1, 'IBM Plex Sans Thin'],
+      [2, 'Regular'],
+      [16, 'IBM Plex Sans'],
+      [17, 'Thin'],
+    ]);
+    const extraLight = buildNameTable([
+      [1, 'IBM Plex Sans ExtraLight'],
+      [2, 'Regular'],
+      [16, 'IBM Plex Sans'],
+      [17, 'ExtraLight'],
+    ]);
+
+    const thinInfo = parseSfnt(
+      buildSfnt([
+        { tag: 'name', data: thin },
+        { tag: 'OS/2', data: buildOs2Full(250, false) },
+      ]),
+    );
+    const extraLightInfo = parseSfnt(
+      buildSfnt([
+        { tag: 'name', data: extraLight },
+        { tag: 'OS/2', data: buildOs2Full(250, false) },
+      ]),
+    );
+
+    expect(thinInfo.weight).toBe(100);
+    expect(extraLightInfo.weight).toBe(200);
+    expect(thinInfo.weight).not.toBe(extraLightInfo.weight);
+  });
+
+  it('derives the weight from the token stripped out of ID1 when there is no ID16/ID17', () => {
+    const name = buildNameTable([
+      [1, 'IBM Plex Serif Light'],
+      [2, 'Regular'],
+    ]);
+    const info = parseSfnt(
+      buildSfnt([
+        { tag: 'name', data: name },
+        { tag: 'OS/2', data: buildOs2Full(300, false) },
+      ]),
+    );
+
+    expect(info.weight).toBe(300);
+    expect(info.family).toBe('IBM Plex Serif');
+  });
+
+  it.each([
+    ['Regular', 400],
+    ['Medium', 500],
+    ['Bold', 700],
+    ['ExtraBold', 800],
+    ['UltraBold', 800],
+    ['Black', 900],
+    ['Heavy', 900],
+  ])('recovers weight %s -> %d from ID1 when there is no ID16/ID17', (token, weight) => {
+    const name = buildNameTable([
+      [1, `Some Family ${token}`],
+      [2, 'Regular'],
+    ]);
+    const info = parseSfnt(
+      buildSfnt([
+        { tag: 'name', data: name },
+        { tag: 'OS/2', data: buildOs2Full(weight, false) },
+      ]),
+    );
+
+    expect(info.weight).toBe(weight);
+    expect(info.family).toBe('Some Family');
+  });
+
+  it('falls back to usWeightClass when ID17 is present but not a recognisable style word', () => {
+    const name = buildNameTable([
+      [1, 'IBM Plex Sans Condensed'],
+      [2, 'Regular'],
+      [16, 'IBM Plex Sans Condensed'],
+      [17, 'Condensed'],
+    ]);
+    const info = parseSfnt(
+      buildSfnt([
+        { tag: 'name', data: name },
+        { tag: 'OS/2', data: buildOs2Full(400, false) },
+      ]),
+    );
+
+    expect(info.weight).toBe(400);
+  });
+
+  it('falls back to usWeightClass when neither ID17 nor a recognisable ID1 token exists', () => {
+    const name = buildNameTable([
+      [1, 'Some Condensed Face'],
+      [2, 'Regular'],
+    ]);
+    const info = parseSfnt(
+      buildSfnt([
+        { tag: 'name', data: name },
+        { tag: 'OS/2', data: buildOs2Full(650, false) },
+      ]),
+    );
+
+    expect(info.weight).toBe(650);
+    expect(info.family).toBe('Some Condensed Face');
+  });
+
+  it('keeps two same-weight faces of Noto Color Emoji colliding as before (not a bug)', () => {
+    // COLRv1 and OT-SVG builds of the same face: no ID17, ID1 carries no style
+    // token, usWeightClass is a genuine 400 for both — must still collide, that
+    // collision is what lets per-platform selection choose between them.
+    const name = buildNameTable([
+      [1, 'Noto Color Emoji'],
+      [2, 'Regular'],
+    ]);
+    const info = parseSfnt(
+      buildSfnt([
+        { tag: 'name', data: name },
+        { tag: 'OS/2', data: buildOs2Full(400, false) },
+      ]),
+    );
+
+    expect(info.weight).toBe(400);
   });
 });

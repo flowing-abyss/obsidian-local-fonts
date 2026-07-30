@@ -252,4 +252,124 @@ describe('buildCss', () => {
     expect(cssText).toContain('!important');
     expect(cssText).toContain("Bob's Emoji");
   });
+
+  it('scopes the monospace hard override to code, not the whole Live Preview editor content area', () => {
+    const css = buildCss({
+      faces: [face({})],
+      roles: { ...DEFAULT_SETTINGS.roles, monospace: 'Probe Sans' },
+      hardOverride: true,
+      resolve,
+    });
+
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(css);
+    const styleRules = Array.from(sheet.cssRules).filter(
+      (rule): rule is CSSStyleRule => rule instanceof CSSStyleRule,
+    );
+    const monospaceRule = styleRules.find((rule) =>
+      rule.style.getPropertyValue('font-family').includes('monospace'),
+    );
+    expect(monospaceRule).toBeDefined();
+
+    // `.cm-content` is the whole editor content area, not code — matching it forces
+    // every paragraph, heading and list item in Live Preview to render monospace.
+    expect(monospaceRule?.selectorText).not.toContain('.cm-content');
+    expect(monospaceRule?.selectorText).not.toContain('.cm-editor');
+
+    // Reading view uses bare `code`/`pre`; Live Preview marks inline code with
+    // `.cm-inline-code` and fenced code-block lines with `.HyperMD-codeblock` on
+    // `.cm-line` — those are the selectors that actually scope to code.
+    expect(monospaceRule?.selectorText).toContain('code');
+    expect(monospaceRule?.selectorText).toContain('pre');
+    expect(monospaceRule?.selectorText).toContain('cm-inline-code');
+    expect(monospaceRule?.selectorText).toContain('HyperMD-codeblock');
+  });
+
+  it('extends the heading hard-override rule to Live Preview classes and the note title, not just h1..h6', () => {
+    const css = buildCss({
+      faces: [face({})],
+      roles: { ...DEFAULT_SETTINGS.roles, headings: 'Probe Sans' },
+      hardOverride: true,
+      resolve,
+    });
+
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(css);
+    const styleRules = Array.from(sheet.cssRules).filter(
+      (rule): rule is CSSStyleRule => rule instanceof CSSStyleRule,
+    );
+    const headingRule = styleRules.find((rule) =>
+      rule.style.getPropertyValue('font-family').includes('Probe Sans'),
+    );
+    expect(headingRule).toBeDefined();
+
+    const selectors = (headingRule?.selectorText ?? '').split(',').map((s) => s.trim());
+
+    // Reading view: real heading elements.
+    for (const tag of ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']) {
+      expect(selectors).toContain(tag);
+    }
+    // Live Preview never renders headings as h1..h6 — it marks the `.cm-line` div
+    // with `.HyperMD-header-N`, and the note title (which Obsidian treats as a
+    // heading) is `.inline-title`. Verified against a running app's own app.css.
+    for (const n of [1, 2, 3, 4, 5, 6]) {
+      expect(selectors).toContain(`.HyperMD-header-${n}`);
+    }
+    expect(selectors).toContain('.inline-title');
+  });
+
+  it('never emits a CSS-wide keyword as one item in a font-family list', () => {
+    // `font-family: 'X', inherit` is invalid CSS — a CSS-wide keyword is only valid
+    // as a property's *entire* value, never as one item in a comma-separated list.
+    // Real browsers drop such a declaration entirely at parse time; jsdom's CSSOM
+    // (used by this test suite) is too lenient to reject it, which is exactly why a
+    // plain string-contains check on the stylesheet text previously missed this —
+    // "inherit" was present in the source, just not validly. So this asserts
+    // directly on every comma-separated item of every parsed font-family-shaped
+    // declaration instead.
+    const css = buildCss({
+      faces: [face({})],
+      roles: { ...DEFAULT_SETTINGS.roles, text: 'Probe Sans', headings: 'Probe Sans' },
+      hardOverride: true,
+      resolve,
+    });
+
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(css);
+    const styleRules = Array.from(sheet.cssRules).filter(
+      (rule): rule is CSSStyleRule => rule instanceof CSSStyleRule,
+    );
+
+    const wideKeywords = new Set(['inherit', 'initial', 'unset', 'revert', 'revert-layer']);
+    const propertiesToCheck = [
+      'font-family',
+      '--h1-font',
+      '--h2-font',
+      '--h3-font',
+      '--h4-font',
+      '--h5-font',
+      '--h6-font',
+    ];
+
+    let checkedAtLeastOneList = false;
+    for (const rule of styleRules) {
+      for (const property of propertiesToCheck) {
+        const value = rule.style.getPropertyValue(property);
+        if (value === '') {
+          continue;
+        }
+        const items = value.split(',').map((item) => item.trim().toLowerCase());
+        if (items.length <= 1) {
+          continue;
+        }
+        checkedAtLeastOneList = true;
+        for (const item of items) {
+          expect(wideKeywords.has(item)).toBe(false);
+        }
+      }
+    }
+    // Guards against the assertion above vacuously passing because no multi-item
+    // list was ever found (e.g. if buildCss stopped emitting any stack at all).
+    expect(checkedAtLeastOneList).toBe(true);
+  });
 });

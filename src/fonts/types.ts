@@ -34,8 +34,14 @@ export interface FaceRecord {
   source: MetadataSource;
 }
 
-/** Cache format version. Bump when FaceRecord changes shape; a mismatch forces a rescan. */
-export const CACHE_VERSION = 1;
+/**
+ * Cache format version. Bump when FaceRecord changes shape, or when the meaning of
+ * an existing field changes enough that a stale cache would serve wrong data — a
+ * mismatch forces a rescan. Bumped to 2: parseSfnt now recovers the typographic
+ * family and weight for legacy-named fonts (see sfnt.ts), so a cache built by the
+ * old parser holds `family`/`weight` values computed the old, buggy way.
+ */
+export const CACHE_VERSION = 2;
 
 export interface FontCache {
   version: typeof CACHE_VERSION;

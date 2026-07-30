@@ -65,7 +65,7 @@ describe('LocalFontsSettingTab', () => {
 
   it('lists a discovered family with its weights', () => {
     plugin.settings.cache = {
-      version: 1,
+      version: 2,
       folder: '.fonts',
       faces: [
         {
@@ -96,7 +96,7 @@ describe('LocalFontsSettingTab', () => {
 
   it('warns when no face of a family can render on this engine', () => {
     plugin.settings.cache = {
-      version: 1,
+      version: 2,
       folder: '.fonts',
       faces: [
         {
@@ -125,7 +125,7 @@ describe('LocalFontsSettingTab', () => {
   it('renders an SVG-colour face as usable on WebKit (iOS/iPadOS), unlike on Chromium', () => {
     Platform.isIosApp = true;
     plugin.settings.cache = {
-      version: 1,
+      version: 2,
       folder: '.fonts',
       faces: [
         {
@@ -156,7 +156,7 @@ describe('LocalFontsSettingTab', () => {
 
   it('reports a missing regular weight and formats a large file in MB', () => {
     plugin.settings.cache = {
-      version: 1,
+      version: 2,
       folder: '.fonts',
       faces: [
         {
@@ -185,7 +185,7 @@ describe('LocalFontsSettingTab', () => {
 
   it('marks a guessed value as guessed, distinctly from a parsed one', () => {
     plugin.settings.cache = {
-      version: 1,
+      version: 2,
       folder: '.fonts',
       faces: [
         {
@@ -214,7 +214,7 @@ describe('LocalFontsSettingTab', () => {
 
   it('attaches the metadata source per face, so a mixed family does not hide which face was guessed', () => {
     plugin.settings.cache = {
-      version: 1,
+      version: 2,
       folder: '.fonts',
       faces: [
         {
@@ -271,7 +271,7 @@ describe('LocalFontsSettingTab', () => {
 
   it('renders non-empty variable axes with tag, range and default', () => {
     plugin.settings.cache = {
-      version: 1,
+      version: 2,
       folder: '.fonts',
       faces: [
         {
@@ -299,7 +299,7 @@ describe('LocalFontsSettingTab', () => {
 
   it('omits the axes element entirely for a static face', () => {
     plugin.settings.cache = {
-      version: 1,
+      version: 2,
       folder: '.fonts',
       faces: [
         {
@@ -326,7 +326,7 @@ describe('LocalFontsSettingTab', () => {
 
   it('gives the winner a reason and the loser a matching one, for genuinely competing faces', () => {
     plugin.settings.cache = {
-      version: 1,
+      version: 2,
       folder: '.fonts',
       faces: [
         {
@@ -374,7 +374,7 @@ describe('LocalFontsSettingTab', () => {
 
   it('gives a "smaller file" reason when two competing faces share a format', () => {
     plugin.settings.cache = {
-      version: 1,
+      version: 2,
       folder: '.fonts',
       faces: [
         {
@@ -421,7 +421,7 @@ describe('LocalFontsSettingTab', () => {
 
   it('gives a "tie-break" reason when format and size are both tied', () => {
     plugin.settings.cache = {
-      version: 1,
+      version: 2,
       folder: '.fonts',
       faces: [
         {
@@ -468,7 +468,7 @@ describe('LocalFontsSettingTab', () => {
 
   it('shows a per-face unsupported-colour verdict even when the family has a usable face', () => {
     plugin.settings.cache = {
-      version: 1,
+      version: 2,
       folder: '.fonts',
       faces: [
         {
@@ -537,7 +537,7 @@ describe('LocalFontsSettingTab', () => {
 
   it('sorts families alphabetically regardless of scan order', () => {
     plugin.settings.cache = {
-      version: 1,
+      version: 2,
       folder: '.fonts',
       faces: [
         {
@@ -631,7 +631,7 @@ describe('LocalFontsSettingTab', () => {
       const { LocalFontsSettingTab: MockedTab } = await import('./settings-tab.js');
       const mockedTab = new MockedTab(tab.app, plugin);
       plugin.settings.cache = {
-        version: 1,
+        version: 2,
         folder: '.fonts',
         faces: [
           {
@@ -659,12 +659,14 @@ describe('LocalFontsSettingTab', () => {
       button?.click();
 
       const results = mockedTab.containerEl.querySelector('.local-fonts-check-results');
-      expect(results?.textContent).toContain('Text: Probe Sans — rendering');
+      await vi.waitFor(() => {
+        expect(results?.textContent).toContain('Text: Probe Sans — rendering');
+      });
     });
 
-    it('reports whether each assigned role is actually rendering', () => {
+    it('reports whether each assigned role is actually rendering', async () => {
       plugin.settings.cache = {
-        version: 1,
+        version: 2,
         folder: '.fonts',
         faces: [
           {
@@ -692,12 +694,14 @@ describe('LocalFontsSettingTab', () => {
       button?.click();
 
       const results = tab.containerEl.querySelector('.local-fonts-check-results');
-      expect(results?.textContent).toContain('Text: Probe Sans');
+      await vi.waitFor(() => {
+        expect(results?.textContent).toContain('Text: Probe Sans');
+      });
     });
 
-    it('clears previous results on a second click rather than appending', () => {
+    it('clears previous results on a second click rather than appending', async () => {
       plugin.settings.cache = {
-        version: 1,
+        version: 2,
         folder: '.fonts',
         faces: [
           {
@@ -722,10 +726,62 @@ describe('LocalFontsSettingTab', () => {
       const button = Array.from(tab.containerEl.querySelectorAll('button')).find(
         (b) => b.textContent === 'Check',
       );
+      const results = tab.containerEl.querySelector('.local-fonts-check-results');
+
+      button?.click();
+      await vi.waitFor(() => {
+        expect(results?.querySelectorAll('p')).toHaveLength(1);
+      });
+
+      button?.click();
+      await vi.waitFor(() => {
+        expect(results?.querySelectorAll('p')).toHaveLength(1);
+      });
+    });
+
+    it('ignores a click while a check is already in flight, rather than racing two runs', async () => {
+      // runCheck awaits document.fonts.load per role before measuring; a second click
+      // before the first run settles could otherwise interleave two runs' DOM writes —
+      // the second run's results.empty() landing after the first run has already
+      // started appending rows, leaving rows from both runs behind.
+      plugin.settings.cache = {
+        version: 2,
+        folder: '.fonts',
+        faces: [
+          {
+            path: '.fonts/a-400.woff2',
+            format: 'woff2',
+            size: 1,
+            mtime: 1,
+            family: 'Probe Sans',
+            weight: 400,
+            italic: false,
+            colorFormats: [],
+            scripts: [],
+            axes: [],
+            license: null,
+            source: 'name-table',
+          },
+        ],
+      };
+      plugin.settings.roles.text = 'Probe Sans';
+      tab.display();
+
+      const button = Array.from(tab.containerEl.querySelectorAll('button')).find(
+        (b) => b.textContent === 'Check',
+      );
+      const results = tab.containerEl.querySelector('.local-fonts-check-results');
+
       button?.click();
       button?.click();
 
-      const results = tab.containerEl.querySelector('.local-fonts-check-results');
+      await vi.waitFor(() => {
+        expect(results?.querySelectorAll('p')).toHaveLength(1);
+      });
+      // Give any wrongly-scheduled second run a turn to (mis)fire before asserting
+      // the count stays put.
+      await Promise.resolve();
+      await Promise.resolve();
       expect(results?.querySelectorAll('p')).toHaveLength(1);
     });
   });
@@ -774,6 +830,130 @@ describe('LocalFontsSettingTab', () => {
       await vi.waitFor(() => {
         expect(consoleError).toHaveBeenCalled();
       });
+    });
+  });
+
+  describe('the Emoji role dropdown', () => {
+    it('lists only families with at least one colour-glyph face', () => {
+      plugin.settings.cache = {
+        version: 2,
+        folder: '.fonts',
+        faces: [
+          {
+            path: '.fonts/ibm-plex-serif/thin.woff2',
+            format: 'woff2',
+            size: 1,
+            mtime: 1,
+            family: 'IBM Plex Serif',
+            weight: 100,
+            italic: false,
+            colorFormats: [],
+            scripts: [],
+            axes: [],
+            license: null,
+            source: 'name-table',
+          },
+          {
+            path: '.fonts/probe-emoji/probe-emoji.woff2',
+            format: 'woff2',
+            size: 1,
+            mtime: 1,
+            family: 'Probe Emoji',
+            weight: 400,
+            italic: false,
+            colorFormats: ['COLR0'],
+            scripts: ['emoji'],
+            axes: [],
+            license: null,
+            source: 'name-table',
+          },
+        ],
+      };
+
+      tab.display();
+
+      const selects = tab.containerEl.querySelectorAll('select');
+      // ROLES order is text, interface, monospace, headings, emoji — the 5th select
+      // is the Emoji role's dropdown.
+      const emojiOptions = Array.from(selects[4]?.querySelectorAll('option') ?? []).map(
+        (o) => o.value,
+      );
+      const textOptions = Array.from(selects[0]?.querySelectorAll('option') ?? []).map(
+        (o) => o.value,
+      );
+
+      expect(emojiOptions).toStrictEqual(['', 'Probe Emoji']);
+      // Every other role must still list every family, colour or not.
+      expect(textOptions).toStrictEqual(['', 'IBM Plex Serif', 'Probe Emoji']);
+    });
+
+    it('does not use the emoji script probe as a substitute for real colour-glyph detection', () => {
+      // The emoji script probe covers U+2600-26FF (miscellaneous symbols), which an
+      // ordinary text font can also claim — scripts.includes('emoji') would let a
+      // ordinary text font into the Emoji dropdown, which is exactly the bug.
+      plugin.settings.cache = {
+        version: 2,
+        folder: '.fonts',
+        faces: [
+          {
+            path: '.fonts/ibm-plex-serif/thin.woff2',
+            format: 'woff2',
+            size: 1,
+            mtime: 1,
+            family: 'IBM Plex Serif',
+            weight: 100,
+            italic: false,
+            colorFormats: [],
+            scripts: ['emoji'],
+            axes: [],
+            license: null,
+            source: 'name-table',
+          },
+        ],
+      };
+
+      tab.display();
+
+      const selects = tab.containerEl.querySelectorAll('select');
+      const emojiOptions = Array.from(selects[4]?.querySelectorAll('option') ?? []).map(
+        (o) => o.value,
+      );
+
+      expect(emojiOptions).toStrictEqual(['']);
+    });
+
+    it('still renders "leave the theme alone" and says plainly when no colour-emoji font was found', () => {
+      plugin.settings.cache = {
+        version: 2,
+        folder: '.fonts',
+        faces: [
+          {
+            path: '.fonts/ibm-plex-serif/thin.woff2',
+            format: 'woff2',
+            size: 1,
+            mtime: 1,
+            family: 'IBM Plex Serif',
+            weight: 100,
+            italic: false,
+            colorFormats: [],
+            scripts: [],
+            axes: [],
+            license: null,
+            source: 'name-table',
+          },
+        ],
+      };
+
+      tab.display();
+
+      const selects = tab.containerEl.querySelectorAll('select');
+      const emojiOptions = Array.from(selects[4]?.querySelectorAll('option') ?? []).map(
+        (o) => o.value,
+      );
+      expect(emojiOptions).toStrictEqual(['']);
+
+      const emojiControl = tab.containerEl.querySelectorAll('.setting-item')[5];
+      expect(emojiControl?.textContent).toContain('No colour-emoji font found');
     });
   });
 });

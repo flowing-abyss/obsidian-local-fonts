@@ -94,6 +94,129 @@ const NAME_LICENSE = 13;
 const NAME_TYPOGRAPHIC_FAMILY = 16;
 const NAME_TYPOGRAPHIC_SUBFAMILY = 17;
 
+/**
+ * Canonical weight for a normalised (lowercase, no spaces/hyphens) style word — a
+ * lookup table rather than a chain of conditionals, so adding a synonym never adds
+ * branching complexity. "extralight"/"ultralight" and "light" are distinct keys, so
+ * one can never be mistaken for the other.
+ */
+const STYLE_WORD_WEIGHT: Readonly<Record<string, number>> = {
+  thin: 100,
+  hairline: 100,
+  extralight: 200,
+  ultralight: 200,
+  light: 300,
+  regular: 400,
+  normal: 400,
+  book: 400,
+  medium: 500,
+  semibold: 600,
+  demibold: 600,
+  bold: 700,
+  extrabold: 800,
+  ultrabold: 800,
+  black: 900,
+  heavy: 900,
+};
+
+function weightOfStyleWord(normalised: string): number | null {
+  return STYLE_WORD_WEIGHT[normalised] ?? null;
+}
+
+/** Trailing "Italic"/"Oblique", with its leading separator (if any). */
+const TRAILING_ITALIC = /[\s-]?(?:italic|oblique)$/i;
+
+/** Splits on the separators a style token may be written with: space or hyphen. */
+const WORD_SEPARATOR = /[\s-]+/;
+
+function stripTrailingItalic(text: string): string {
+  const match = TRAILING_ITALIC.exec(text);
+  return match === null ? text : text.slice(0, match.index);
+}
+
+interface TrailingStyleToken {
+  /** ID1 with the trailing style token (and any Italic/Oblique suffix) removed. */
+  strippedFamily: string;
+  weight: number;
+}
+
+/**
+ * Finds a trailing weight word in a legacy-named ID1 family, e.g. "IBM Plex Serif
+ * Thin" or "Bodoni Moda Semi Bold" — with or without the internal space, a compound
+ * token like "SemiBold"/"Semi Bold" is tried as its last *two* words before falling
+ * back to its last word alone, so "Semi Bold" is recognised as one token rather than
+ * "Bold" alone. A trailing Italic/Oblique suffix, if present, is stripped first.
+ */
+function findTrailingStyleToken(id1: string): TrailingStyleToken | null {
+  const words = stripTrailingItalic(id1)
+    .split(WORD_SEPARATOR)
+    .filter((word) => word !== '');
+  if (words.length === 0) {
+    return null;
+  }
+
+  const lastWord = words[words.length - 1] ?? '';
+  const lastTwoWords = words.length >= 2 ? words.slice(-2).join('') : null;
+  const compoundWeight =
+    lastTwoWords === null ? null : weightOfStyleWord(lastTwoWords.toLowerCase());
+  const wordsConsumed = compoundWeight !== null ? 2 : 1;
+  const weight = compoundWeight ?? weightOfStyleWord(lastWord.toLowerCase());
+  if (weight === null) {
+    return null;
+  }
+
+  return { strippedFamily: words.slice(0, -wordsConsumed).join(' '), weight };
+}
+
+/**
+ * Weight implied by a style-only string such as ID17 ("Thin", "ExtraLight Italic") —
+ * the whole string (minus an Italic/Oblique suffix, and internal separators) must
+ * resolve to a single style word, unlike {@link findTrailingStyleToken} which only
+ * needs to match a suffix of a longer family name.
+ */
+function weightOfStyleString(text: string): number | null {
+  const normalised = stripTrailingItalic(text).replace(/[\s-]/g, '').toLowerCase();
+  return weightOfStyleWord(normalised);
+}
+
+interface FamilyAndWeight {
+  family: string;
+  weight: number;
+}
+
+/**
+ * Resolves the family and weight `parseSfnt` reports, folding together Bug 1 (legacy
+ * family names bake a weight word into ID1 when there is no ID16) and Bug 2
+ * (usWeightClass can collide across genuinely distinct faces) — both read from the
+ * same trailing-token recovery, so it is done once here rather than twice inline.
+ *
+ * - family: ID16 if present; otherwise ID1, with a trailing style token stripped
+ *   only when that token's weight matches `os2Weight` (a made-up name like "Black
+ *   Ops One" at weight 400 must not lose "Ops One").
+ * - weight: a style token naming the weight — ID17 if present, otherwise the same
+ *   token stripped from ID1 above — takes priority over `os2Weight`, which is the
+ *   value known to be unreliable in the wild. Falls back to `os2Weight` when no
+ *   such token exists, the common case for well-formed fonts.
+ */
+function resolveFamilyAndWeight(
+  names: ReadonlyMap<number, string>,
+  os2Weight: number,
+): FamilyAndWeight {
+  const typographicFamily = names.get(NAME_TYPOGRAPHIC_FAMILY);
+  const id1 = names.get(NAME_FAMILY) ?? '';
+  const legacyToken = typographicFamily === undefined ? findTrailingStyleToken(id1) : null;
+  const family =
+    typographicFamily ??
+    (legacyToken !== null && legacyToken.weight === os2Weight ? legacyToken.strippedFamily : id1);
+
+  const typographicSubfamily = names.get(NAME_TYPOGRAPHIC_SUBFAMILY);
+  const subfamilyTokenWeight =
+    typographicSubfamily === undefined ? null : weightOfStyleString(typographicSubfamily);
+  const weight = subfamilyTokenWeight ?? legacyToken?.weight ?? os2Weight;
+
+  return { family, weight };
+}
+
 function decodeNameString(
   view: DataView,
   offset: number,
@@ -304,10 +427,13 @@ export function parseSfnt(buf: ArrayBuffer): SfntInfo {
   const cmap = dir.get('cmap');
   const scripts = cmap === undefined ? [] : scriptsFrom(readCmapCodepoints(buf, cmap));
 
+  // Bugs 1 & 2: see resolveFamilyAndWeight's own doc comment.
+  const resolved = resolveFamilyAndWeight(names, weight);
+
   return {
-    family: names.get(NAME_TYPOGRAPHIC_FAMILY) ?? names.get(NAME_FAMILY) ?? '',
+    family: resolved.family,
     subfamily: names.get(NAME_TYPOGRAPHIC_SUBFAMILY) ?? names.get(NAME_SUBFAMILY) ?? '',
-    weight,
+    weight: resolved.weight,
     italic,
     colorFormats: colorFormatsFromTags(dir.keys(), buf, dir),
     scripts,

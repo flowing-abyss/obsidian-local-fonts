@@ -42,36 +42,83 @@ describe('measureText', () => {
 });
 
 describe('isFamilyApplied', () => {
-  it('reports false when the family measures the same as a nonexistent one', () => {
+  it('reports false when the family measures the same as a nonexistent one', async () => {
     // jsdom has no real font engine, so every family measures identically —
     // which is exactly the "font did not apply" signal.
-    expect(isFamilyApplied('Probe Sans', document)).toBe(false);
+    expect(await isFamilyApplied('Probe Sans', document)).toBe(false);
   });
 
-  it('reports true when the family measures differently from the sentinel', () => {
+  it('reports true when the family measures differently from the sentinel', async () => {
     const widths = [120, 80];
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(
       () => ({ width: widths.shift() ?? 0 }) as DOMRect,
     );
 
-    expect(isFamilyApplied('Probe Sans', document)).toBe(true);
+    expect(await isFamilyApplied('Probe Sans', document)).toBe(true);
   });
 
-  it('treats a sub-epsilon difference as no divergence', () => {
+  it('treats a sub-epsilon difference as no divergence', async () => {
     const widths = [100.3, 100];
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(
       () => ({ width: widths.shift() ?? 0 }) as DOMRect,
     );
 
-    expect(isFamilyApplied('Probe Sans', document)).toBe(false);
+    expect(await isFamilyApplied('Probe Sans', document)).toBe(false);
   });
 
-  it('treats a just-over-epsilon difference as real divergence', () => {
+  it('treats a just-over-epsilon difference as real divergence', async () => {
     const widths = [100.6, 100];
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(
       () => ({ width: widths.shift() ?? 0 }) as DOMRect,
     );
 
-    expect(isFamilyApplied('Probe Sans', document)).toBe(true);
+    expect(await isFamilyApplied('Probe Sans', document)).toBe(true);
+  });
+
+  it('awaits document.fonts.load before measuring, so a not-yet-used face is not reported as absent', async () => {
+    // font-display: swap means a face nothing on screen has used yet is not fetched,
+    // so measuring it immediately would see only the fallback width — indistinguishable
+    // from "not applying". Simulate that: the font "arrives" only once `fonts.load`
+    // resolves, and the measurement must happen after that, not before.
+    let loaded = false;
+    const load = vi.fn().mockImplementation(async (spec: string) => {
+      expect(spec).toContain('Probe Sans');
+      await Promise.resolve();
+      loaded = true;
+      return [];
+    });
+    Object.defineProperty(document, 'fonts', {
+      configurable: true,
+      value: { load },
+    });
+
+    try {
+      vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+        this: HTMLElement,
+      ) {
+        // Only diverges from the sentinel once the (simulated) font has actually
+        // loaded — if isFamilyApplied measured before awaiting `load`, this would see
+        // `loaded === false` for the family measurement too, and the assertion below
+        // would fail.
+        const isSentinelOnly = !this.style.fontFamily.includes('Probe Sans');
+        const width = isSentinelOnly || !loaded ? 100 : 140;
+        return { width } as DOMRect;
+      });
+
+      const applied = await isFamilyApplied('Probe Sans', document);
+
+      expect(load).toHaveBeenCalled();
+      expect(applied).toBe(true);
+    } finally {
+      Reflect.deleteProperty(document, 'fonts');
+    }
+  });
+
+  it('measures anyway when document.fonts is unavailable (e.g. this test environment)', async () => {
+    // jsdom itself has no FontFaceSet — this is the common case in the test suite,
+    // not a hypothetical, so isFamilyApplied must degrade gracefully rather than throw.
+    expect('fonts' in document).toBe(false);
+
+    await expect(isFamilyApplied('Probe Sans', document)).resolves.toBe(false);
   });
 });

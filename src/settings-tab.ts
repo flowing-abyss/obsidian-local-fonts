@@ -17,6 +17,16 @@ const ROLES: ReadonlyArray<readonly [RoleName, string, string]> = [
 const NONE = '';
 
 export class LocalFontsSettingTab extends PluginSettingTab {
+  /**
+   * `runCheck` is async (it awaits each family's font load before measuring — see
+   * `isFamilyApplied`), so a second click before the first run finishes would race
+   * it: the second run's `results.empty()` can execute before the first run has
+   * finished appending its rows, leaving both runs' rows behind instead of just the
+   * second's. Ignoring a click while one is already in flight is simpler and safer
+   * than trying to make two concurrent DOM-mutating runs commute.
+   */
+  private checkInFlight = false;
+
   constructor(
     app: App,
     private readonly plugin: LocalFontsPlugin,
@@ -36,7 +46,13 @@ export class LocalFontsSettingTab extends PluginSettingTab {
     const engine: Engine = Platform.isIosApp ? 'webkit' : 'chromium';
 
     this.renderFolder();
-    this.renderRoles([...families.keys()].sort((a, b) => a.localeCompare(b)));
+    this.renderRoles(
+      [...families.keys()].sort((a, b) => a.localeCompare(b)),
+      [...families]
+        .filter(([, faces]) => faces.some((face) => face.colorFormats.length > 0))
+        .map(([family]) => family)
+        .sort((a, b) => a.localeCompare(b)),
+    );
     this.renderHardOverride();
     this.renderDiagnostics(families, engine);
   }
@@ -83,11 +99,25 @@ export class LocalFontsSettingTab extends PluginSettingTab {
     this.display();
   }
 
-  private renderRoles(familyNames: readonly string[]): void {
+  /**
+   * The Emoji role is filtered to families with at least one colour-glyph face —
+   * only those are plausible emoji fonts. `scripts.includes('emoji')` is not used
+   * for this: that probe covers U+2600-26FF (miscellaneous symbols), which ordinary
+   * text fonts also cover, so it would let nearly everything through. The other
+   * four roles are unfiltered.
+   */
+  private renderRoles(familyNames: readonly string[], emojiFamilyNames: readonly string[]): void {
     for (const [role, name, desc] of ROLES) {
-      this.newControl(name, desc).addDropdown((dropdown) => {
+      const isEmoji = role === 'emoji';
+      const options = isEmoji ? emojiFamilyNames : familyNames;
+      const description =
+        isEmoji && emojiFamilyNames.length === 0
+          ? 'No colour-emoji font found in the folder — add one with COLR, CBDT, sbix or SVG glyphs to enable this role.'
+          : desc;
+
+      this.newControl(name, description).addDropdown((dropdown) => {
         dropdown.addOption(NONE, 'Leave the theme alone');
-        for (const family of familyNames) {
+        for (const family of options) {
           dropdown.addOption(family, family);
         }
         dropdown
@@ -198,11 +228,27 @@ export class LocalFontsSettingTab extends PluginSettingTab {
     const results = parent.createDiv({ cls: 'local-fonts-check-results' });
     const button = parent.createEl('button', { text: 'Check' });
     button.addEventListener('click', () => {
-      this.runCheck(results);
+      if (this.checkInFlight) {
+        return;
+      }
+      this.checkInFlight = true;
+      this.runCheck(results)
+        .catch((error: unknown) => {
+          console.error('[local-fonts] check failed', error);
+        })
+        .finally(() => {
+          this.checkInFlight = false;
+        });
     });
   }
 
-  private runCheck(results: HTMLElement): void {
+  /**
+   * `isFamilyApplied` is async because it awaits `document.fonts.load` first — a face
+   * using `font-display: swap` (every face this plugin emits) is not fetched until
+   * something on screen has used it, so measuring before that would report a
+   * correctly-configured-but-not-yet-used family as absent.
+   */
+  private async runCheck(results: HTMLElement): Promise<void> {
     results.empty();
     // `containerEl.doc` is Obsidian's document accessor, correct in popout windows too;
     // the test harness (obsidian-test-mocks) polyfills the same accessor onto jsdom's
@@ -213,7 +259,7 @@ export class LocalFontsSettingTab extends PluginSettingTab {
       if (family === null) {
         continue;
       }
-      const applied = isFamilyApplied(family, doc);
+      const applied = await isFamilyApplied(family, doc);
       results.createEl('p', {
         text: `${name}: ${family} — ${applied ? 'rendering' : 'NOT rendering, the theme font is being used'}`,
       });
