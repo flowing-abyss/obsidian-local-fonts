@@ -70,7 +70,62 @@ describe('buildCss', () => {
     });
 
     expect(css).toContain('--font-text-override');
-    expect(css).not.toContain('--font-text-theme');
+  });
+
+  it('writes both the override and theme variable tiers with identical values, for every role that has an Obsidian font variable', () => {
+    // -override is the tier Obsidian's own Appearance settings use, and it is what
+    // wins inside Obsidian's `--font-X: var(--font-X-override, var(--font-X-theme,
+    // ...))` chain, so it must stay. -theme is the tier community themes sometimes
+    // read *directly*, bypassing that chain entirely; Obsidian's own default for
+    // that tier is the literal placeholder string '??', a font family that does not
+    // exist, so a theme reading it directly gets no font at all (including emoji)
+    // unless we also write it. Both tiers must therefore carry the same value.
+    // Asserted on the parsed CSSOM, not substrings, so a present-but-empty or
+    // invalid declaration can't slip through the way the earlier heading bug did.
+    const css = buildCss({
+      faces: [face({})],
+      roles: {
+        ...DEFAULT_SETTINGS.roles,
+        text: 'Probe Sans',
+        interface: 'Probe Sans',
+        monospace: 'Probe Sans',
+      },
+      hardOverride: false,
+      resolve,
+    });
+
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(css);
+    const styleRules = Array.from(sheet.cssRules).filter(
+      (rule): rule is CSSStyleRule => rule instanceof CSSStyleRule,
+    );
+    const body = styleRules.find((rule) => rule.selectorText === 'body');
+    expect(body).toBeDefined();
+
+    for (const role of ['text', 'interface', 'monospace']) {
+      const overrideValue = body?.style.getPropertyValue(`--font-${role}-override`);
+      const themeValue = body?.style.getPropertyValue(`--font-${role}-theme`);
+      expect(overrideValue).toBeTruthy();
+      expect(themeValue).toBeTruthy();
+      expect(themeValue).toBe(overrideValue);
+    }
+  });
+
+  it('never emits the Obsidian placeholder font family "??", which resolves to no font at all', () => {
+    const css = buildCss({
+      faces: [face({})],
+      roles: {
+        ...DEFAULT_SETTINGS.roles,
+        text: 'Probe Sans',
+        interface: 'Probe Sans',
+        monospace: 'Probe Sans',
+        headings: 'Probe Sans',
+      },
+      hardOverride: true,
+      resolve,
+    });
+
+    expect(css).not.toContain('??');
   });
 
   it('assigns headings to the h1..h6 variables', () => {

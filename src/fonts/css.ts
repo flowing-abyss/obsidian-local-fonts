@@ -80,25 +80,49 @@ export interface BuildCssInput {
   resolve: (path: string) => string;
 }
 
-/** `--font-*-override` / `--h*-font` declarations for the roles that are assigned. */
+/**
+ * Push both variable tiers for one Obsidian font role, carrying the identical value.
+ *
+ * Both tiers must stay, for two independent reasons — do not "simplify" this to one:
+ * - `-override` is the tier Obsidian's own Appearance settings write, and it is what
+ *   wins inside Obsidian's own `--font-X: var(--font-X-override, var(--font-X-theme,
+ *   ...))` fallback chain. Anyone who has ever picked a font in Appearance settings
+ *   depends on this tier existing.
+ * - `-theme` is the tier community themes are written against; some themes read
+ *   `--font-X-theme` *directly*, bypassing Obsidian's own `--font-X` chain entirely
+ *   (observed live: Base16 Default Dark's `.bases-view` rule does this). Obsidian's
+ *   own default for that tier is the literal placeholder string `'??'` — a font
+ *   family that does not exist — so a theme reading it directly gets no font at all,
+ *   which drops every family in the stack including emoji. Writing `-theme` too is
+ *   what makes those themes pick up our fonts instead of silently falling through.
+ */
+function pushTieredDeclaration(
+  declarations: string[],
+  role: 'text' | 'interface' | 'monospace',
+  value: string,
+): void {
+  declarations.push(`  --font-${role}-override: ${value};`);
+  declarations.push(`  --font-${role}-theme: ${value};`);
+}
+
+/** `--font-*-override`/`--font-*-theme` / `--h*-font` declarations for assigned roles. */
 function buildDeclarations(roles: RoleAssignments): string[] {
   const emoji = roles.emoji;
   const declarations: string[] = [];
 
   if (roles.text !== null) {
-    declarations.push(`  --font-text-override: ${stack(roles.text, emoji, 'sans-serif')};`);
+    pushTieredDeclaration(declarations, 'text', stack(roles.text, emoji, 'sans-serif'));
   }
   if (roles.interface !== null) {
-    declarations.push(
-      `  --font-interface-override: ${stack(roles.interface, emoji, 'sans-serif')};`,
-    );
+    pushTieredDeclaration(declarations, 'interface', stack(roles.interface, emoji, 'sans-serif'));
   }
   if (roles.monospace !== null) {
-    declarations.push(
-      `  --font-monospace-override: ${stack(roles.monospace, emoji, 'monospace')};`,
-    );
+    pushTieredDeclaration(declarations, 'monospace', stack(roles.monospace, emoji, 'monospace'));
   }
   if (roles.headings !== null) {
+    // No Obsidian-level heading variable tier exists to pair with `--h*-font`
+    // (headings are not one of Obsidian's `--font-X-override`/`-theme` roles), so
+    // there is nothing to write a second tier for here — leave this path alone.
     for (const variable of HEADING_VARIABLES) {
       declarations.push(`  ${variable}: ${stack(roles.headings, emoji, 'inherit')};`);
     }
@@ -110,9 +134,8 @@ function buildDeclarations(roles: RoleAssignments): string[] {
 /**
  * Build the whole stylesheet: one @font-face per selected file, then the forcing rules.
  *
- * Writes the `*-override` variable tier because that is the tier Obsidian's Appearance
- * settings use; writing `*-theme` would lose silently for anyone who has ever picked a
- * font there.
+ * Writes both the `*-override` and `*-theme` variable tiers for text, interface and
+ * monospace — see `pushTieredDeclaration` for why neither tier can be dropped.
  */
 export function buildCss(input: BuildCssInput): string {
   const { faces, roles, hardOverride, resolve } = input;
