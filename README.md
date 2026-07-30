@@ -66,9 +66,9 @@ carrying both. Any combination of those works.
 
 ## Limitations
 
-The desktop test suite runs against Obsidian 1.0.3 and the latest stable release.
-Android has no automated coverage yet, and none is available for iOS. On those platforms
-the Check button is how you confirm a font applied.
+The test suite runs on every release against Obsidian 1.0.3 and the latest stable
+release, covering Windows, macOS, Linux and Android on real devices. iOS has no
+automation available, so the Check button is how you confirm a font applied there.
 
 Emoji on iOS depend on which colour formats your files carry. When they fail, the card
 shows which format is missing.
