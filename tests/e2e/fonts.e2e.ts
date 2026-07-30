@@ -56,12 +56,17 @@ describe('local fonts apply in a real Obsidian', () => {
     });
 
     expect(css).not.toContain('base64');
-    // Positive check, not just the absence of base64: the URL must actually be an
-    // app:// resource path (what adapter.getResourcePath returns), so this fails loudly
-    // if resolve() ever silently returns something else (e.g. a bare vault-relative path).
+    // A positive check as well, so this fails loudly if resolve() ever returns something
+    // that is neither base64 nor a real resource URL, such as a bare vault-relative path.
+    // The scheme differs by platform: desktop gets app://, and Obsidian mobile serves
+    // files through Capacitor at http://localhost/_capacitor_file_/<abs path>. Asserting
+    // on app:// alone passed on all three desktop runners and failed on real Android,
+    // which is what the mobile leg of this matrix exists to catch. Both platforms must
+    // point at the hidden fonts folder and must not use a data: URI.
+    expect(css).toMatch(/url\(["'](?!data:)[a-z]+:\/\//i);
+    expect(css).toContain('/.fonts/');
     // Quoting is matched loosely (' or ") because this reads CSSOM's `cssText`
     // serialization, which normalizes to double quotes regardless of how css.ts wrote it.
-    expect(css).toMatch(/url\(["']app:\/\//);
   });
 
   it('loads a font from the hidden .fonts folder, proving dot-folder access works', async () => {
