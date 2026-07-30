@@ -1,154 +1,90 @@
 # Local Fonts
 
-Load font files from a folder in your vault and apply them to text, interface,
-monospace, headings and emoji — on desktop and mobile, with no network access.
+Load fonts from a folder in your vault and apply them to text, interface, monospace,
+headings and emoji. Works on desktop and mobile, and makes no network requests.
 
-## What it does
+## How it works
 
-Point the plugin at a folder (`.fonts` by default) and it reads every `.ttf`,
-`.otf`, `.woff` and `.woff2` file inside, recursively. It does not guess a
-font's identity from its filename first — it reads the font binary itself:
-real family name, weight, style, script coverage, colour-glyph format,
-variable axes, licence. Only if that fails does it fall back, level by level,
-down to a filename guess as a last resort. The settings tab shows which level
-supplied each face's data, so a guessed value never gets confused for a
-parsed one.
+Point the plugin at a folder and it reads every `.ttf`, `.otf`, `.woff` and `.woff2` file
+inside, including subfolders. Family name, weight, style, script coverage and colour
+format all come from the font file itself, so filenames are irrelevant in normal use.
 
-Fonts are served by resource URL, never embedded as base64, so the browser
-only fetches the faces a note actually uses instead of loading every weight
-up front.
+Fonts load through resource URLs instead of base64, so the browser fetches only the
+weights a note actually displays. A folder holding forty faces typically loads a dozen.
 
-Scanning never happens on startup. `onload` reads the last scan from
-`data.json` and applies it immediately; the folder is only re-walked once
-the workspace layout is ready, and only if something in it changed size or
-modification time since the last scan.
+The folder can be hidden. `.fonts` is the default, which keeps a font collection out of
+your note tree.
 
 ## Adding fonts
 
-Drop font files into the fonts folder. **In normal use, filenames don't
-matter** — every face's family, weight, style and the rest are read straight
-out of the font binary, and the plugin groups faces by that parsed family
-name, not by folder structure (a subfolder per family is a reasonable
-convention, but nothing requires it).
+Drop files into the folder, then open Settings → Local Fonts. Families appear in the
+dropdowns after the folder is scanned. Scanning runs in the background, and only files
+that changed since last time are read again.
 
-Names only come into play as a fallback, in two specific cases: if a
-`.woff2`/`.woff` file's metadata can't be decoded, the plugin looks for a
-sibling file with the **same filename stem** (e.g. `foo.woff2` and `foo.ttf`)
-and reads that instead; and if nothing at all can be parsed, it falls back to
-guessing family/weight/style from the filename itself. Practically, this
-means a `.woff2` and `.ttf` of the same face should share a stem — mismatched
-names silently lose the sibling fallback, and you get a filename guess or a
-missing face instead. The diagnostics card names exactly which level
-supplied each face's data, so a guess never gets mistaken for something
-parsed.
+Filenames matter in one situation. When a `.woff2` cannot be decoded, the plugin looks
+for a file with the same name and a different extension and reads metadata from that
+instead. Keeping `foo.woff2` and `foo.ttf` named alike preserves that fallback.
 
-The folder can be hidden (dot-prefixed, `.fonts` by default) so a font
-collection doesn't clutter your note tree — Obsidian's own vault index can't
-see into dot-folders, which is exactly why the plugin reads the filesystem
-directly instead.
-
-**Shipping the same face in more than one format is an encouraged workflow,
-not an edge case.** If a family's regular weight exists as both `.woff2` and
-`.ttf`, keep both — the plugin picks one per platform automatically, in this
-order:
-
-1. **Can this engine actually render it?** A colour-emoji face in a format
-   the engine doesn't support is skipped outright, even if it's smaller or
-   newer.
-2. **Format preference** among the renderable candidates: woff2 > woff > otf
-   > ttf.
-3. **Smaller file**, if formats tie.
-4. **A deterministic tie-break** on file path (shorter path wins, then
-   lexicographic order), so the same vault always produces byte-identical
-   CSS.
+You can keep the same face in several formats. The plugin picks one per platform,
+preferring a format the current engine can render, then woff2 over woff over otf over
+ttf, then the smaller file.
 
 ## Settings
 
-Seven controls, all under **Settings → Local Fonts**:
+**Fonts folder** takes a vault-relative path.
 
-- **Fonts folder** — vault-relative path; may be hidden.
-- **Text**, **Interface**, **Monospace**, **Headings** — each a dropdown of
-  every family found, or "Leave the theme alone."
-- **Emoji** — same dropdown, but this family is always placed first in every
-  role's font stack and restricted to emoji code points, so it can't steal
-  Latin digits or punctuation from the family you actually picked for that
-  role.
-- **Hard override** — a toggle for themes that hardcode `font-family` instead
-  of using Obsidian's CSS variables. It forces the chosen fonts on with
-  `!important`, with an explicit exception for icon elements so glyph fonts
-  aren't affected.
+**Text**, **Interface**, **Monospace** and **Headings** each take a family from the fonts
+you have, or leave the theme alone.
+
+**Emoji** sits first in every font stack and covers only emoji code points, so it leaves
+digits and punctuation to the family you chose for that role.
+
+**Hard override** forces your fonts with `!important` for themes that set `font-family`
+directly instead of using Obsidian's variables. Icon elements stay untouched.
 
 ## Diagnostics
 
-Below the settings, one collapsible card per family found in the folder,
-listing:
+Every family gets a card listing the weights it has, the scripts it covers, and the
+operating systems that can render it. Each face shows its format, file size, colour
+format, and whether the plugin selected it for this device.
 
-- the weights present (and which common ones are missing, e.g. "300, 700; no
-  400"),
-- the scripts it covers,
-- one line per face: its weight/style, format, file size, colour format and
-  whether _this_ engine can draw it, its variable axes if any, whether
-  `selectFaces` chose it and why (preferred format, smaller file, or
-  tie-break), and which metadata level supplied its data.
+The **Check** button measures what actually rendered on the device you are using. Reach
+for it after changing fonts, especially on a phone.
 
-A **Check** button measures whether each role's assigned family actually
-rendered, by inspecting the live DOM — the definitive way to know whether a
-role is working on the device you're on right now, rather than trusting that
-the CSS was generated correctly.
+## Emoji formats
 
-## Emoji fonts need both builds
+Colour emoji fonts come in incompatible flavours, and the two engines Obsidian runs on
+cover different ones. Chromium, which powers desktop and Android, renders COLRv1 and
+ignores OT-SVG. WebKit on iOS renders both.
 
-Colour emoji fonts don't ship in one universal format, and the two engines
-Obsidian runs on disagree about which they draw:
+One file often cannot serve every platform. Put more than one build of the same emoji
+family in the folder and the plugin chooses per device. The card reports which build it
+picked.
 
-- **Chromium** (Obsidian on desktop, and on Android) draws **COLRv1** but has
-  never shipped OT-SVG.
-- **WebKit** (Obsidian on iOS) draws **OT-SVG**, and treats COLRv1 as
-  supported too.
-
-A single emoji font file often can't satisfy both. The fix is to put more
-than one build of the same emoji family in the folder — the plugin picks the
-right one per device automatically, and the family's diagnostics card
-reports which one it chose and why.
-
-Concretely: Google's **Noto Color Emoji** ships as a COLRv1 `.woff2` (for
-Chromium), a separate OT-SVG build (for WebKit/iOS), and also as a single
-~25 MB `.ttf` that carries both formats in one file. Any of these
-combinations works — put the ones you need in the folder and let the plugin
-sort it out per platform.
-
-## No network access
-
-The plugin makes no network requests of any kind. It reads only the folder
-you point it at, in your own vault.
+Google's Noto Color Emoji ships as a COLRv1 `.woff2`, an OT-SVG build, and a 25 MB `.ttf`
+carrying both. Any combination of those works.
 
 ## Limitations
 
-- The desktop end-to-end suite is verified against Obsidian 1.0.3 (the
-  minimum supported version) and the latest stable release at the time of
-  testing. **Android has not been verified by an automated run**, and no
-  automation exists for iOS at all. If you're on either platform, use the
-  **Check** button after setting things up — it's there precisely so you can
-  confirm a font actually rendered on your own device rather than take it on
-  faith.
-- Whether emoji render on iOS depends entirely on which colour formats the
-  font files in your folder carry. If they don't render there, the
-  diagnostics card names what's missing from the format list.
+The desktop test suite runs against Obsidian 1.0.3 and the latest stable release.
+Android has no automated coverage yet, and none is available for iOS. On those platforms
+the Check button is how you confirm a font applied.
+
+Emoji on iOS depend on which colour formats your files carry. When they fail, the card
+shows which format is missing.
 
 ## Installation
 
-Not yet listed in Obsidian's community plugin browser. Until then, install
-manually:
+The plugin is not in Obsidian's community browser yet. To install it by hand:
 
-1. Download `main.js`, `manifest.json` and `styles.css` (if present) from the
+1. Download `main.js`, `manifest.json` and `styles.css` from the
    [latest release](https://github.com/flowing-abyss/obsidian-local-fonts/releases).
-2. Create a folder named `local-fonts` inside your vault's
-   `.obsidian/plugins/` directory and put those files in it.
-3. Reload Obsidian and enable **Local Fonts** under Settings → Community
-   plugins.
+2. Create a `local-fonts` folder inside your vault's `.obsidian/plugins/` directory and
+   put those three files in it.
+3. Restart Obsidian and enable **Local Fonts** under Settings → Community plugins.
 
-Or use the [Obsidian42 - BRAT](https://github.com/TfTHacker/obsidian42-brat)
-plugin to track and update it from this repository directly.
+[BRAT](https://github.com/TfTHacker/obsidian42-brat) can install and update it from this
+repository directly.
 
 ## License
 
