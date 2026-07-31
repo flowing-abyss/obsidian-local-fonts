@@ -86,8 +86,13 @@ describe('LocalFontsSettingTab', () => {
 
     tab.display();
 
-    // Rendered first in the diagnostics section, ahead of any per-family warning.
-    const warning = tab.containerEl.querySelector('.local-fonts-warning');
+    // Scoped to the diagnostics section: the default folder ('.fonts') now also carries
+    // its own dot-prefix warning next to the folder field, so an unscoped query could
+    // match that one instead. Rendered first within diagnostics, ahead of any per-family
+    // warning.
+    const warning = tab.containerEl
+      .querySelector('.local-fonts-diagnostics')
+      ?.querySelector('.local-fonts-warning');
     expect(warning?.textContent).toContain('may not exist on this device');
   });
 
@@ -1252,6 +1257,29 @@ describe('LocalFontsSettingTab', () => {
   });
 
   describe('the folder field', () => {
+    it('warns that Sync excludes the folder when it starts with a dot, linking to the help docs', () => {
+      tab.display();
+
+      const folderControl = tab.containerEl.querySelectorAll(
+        '.setting-item:not(.setting-item-heading)',
+      )[0];
+      const warning = folderControl?.querySelector('.local-fonts-warning');
+      expect(warning?.textContent).toContain('Obsidian Sync will not sync .folders');
+      expect(warning?.querySelector('a')?.getAttribute('href')).toBe(
+        'https://obsidian.md/help/sync/settings#Hidden+files+and+folders',
+      );
+    });
+
+    it('does not warn once the folder no longer starts with a dot', () => {
+      plugin.settings.folder = 'fonts';
+      tab.display();
+
+      const folderControl = tab.containerEl.querySelectorAll(
+        '.setting-item:not(.setting-item-heading)',
+      )[0];
+      expect(folderControl?.querySelector('.local-fonts-warning')).toBeNull();
+    });
+
     it('commits and rescans once, on blur, rather than on every keystroke', async () => {
       const rescan = vi.spyOn(plugin, 'rescan').mockResolvedValue();
       tab.display();
@@ -1457,6 +1485,26 @@ describe('LocalFontsSettingTab', () => {
       ]);
       const diagnostics = defs[7];
       expect(diagnostics !== undefined && 'render' in diagnostics).toBe(true);
+    });
+
+    it('folds the Sync warning into the folder description when it starts with a dot', () => {
+      const folder = definitions()[0];
+      const desc = folder !== undefined && 'desc' in folder ? folder.desc : undefined;
+      expect(desc).toBeInstanceOf(DocumentFragment);
+      expect((desc as DocumentFragment).textContent).toContain(
+        'Obsidian Sync will not sync .folders',
+      );
+      expect((desc as DocumentFragment).querySelector('a')?.getAttribute('href')).toBe(
+        'https://obsidian.md/help/sync/settings#Hidden+files+and+folders',
+      );
+    });
+
+    it('leaves the folder description plain once it no longer starts with a dot', () => {
+      plugin.settings.folder = 'fonts';
+
+      const folder = definitions()[0];
+      const desc = folder !== undefined && 'desc' in folder ? folder.desc : undefined;
+      expect((desc as DocumentFragment).textContent).not.toContain('Obsidian Sync');
     });
 
     it('marks the heading row so its body stacks below the heading instead of beside it', () => {

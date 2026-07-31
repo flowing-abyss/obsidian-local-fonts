@@ -21,6 +21,13 @@ weights a note actually displays. A folder holding forty faces typically loads a
 The folder can be hidden. `.fonts` is the default, which keeps a font collection out of
 your note tree.
 
+> [!WARNING]
+> Obsidian Sync excludes hidden files and folders, and `.fonts` is one of them. Fonts kept
+> there will not sync between devices. Either sync the folder some other way, or point this
+> plugin at a folder that does not start with a dot. See
+> [Hidden files and folders](https://obsidian.md/help/sync/settings#Hidden+files+and+folders)
+> for details.
+
 ## Adding fonts
 
 Create the folder next to `.obsidian` in your vault root and drop font files into it:
