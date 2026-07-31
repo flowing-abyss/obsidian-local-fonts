@@ -23,6 +23,30 @@ const ROLES: ReadonlyArray<readonly [RoleName, string, string]> = [
 
 const NONE = '';
 
+const FOLDER_DESC = 'Vault-relative. May be hidden, for example .fonts';
+
+const SYNC_HELP_URL = 'https://obsidian.md/help/sync/settings#Hidden+files+and+folders';
+
+/**
+ * The Fonts folder field's description, with a warning appended when the current value
+ * starts with a dot. Obsidian Sync excludes every folder whose name starts with a dot,
+ * with no setting to change it, and `.obsidian` is its only exception. This is the one
+ * moment a warning can reach someone before they lose fonts to it, rather than after a
+ * scan on a second device already came back empty (see `unverifiedCache`).
+ */
+function folderDescription(folder: string): DocumentFragment {
+  return createFragment((frag) => {
+    frag.appendText(FOLDER_DESC);
+    if (folder.startsWith('.')) {
+      frag.appendText('. ');
+      const warning = frag.createDiv({ cls: 'local-fonts-warning' });
+      warning.appendText('Obsidian Sync will not sync .folders. ');
+      warning.createEl('a', { href: SYNC_HELP_URL, text: 'More info' });
+      warning.appendText('.');
+    }
+  });
+}
+
 const OS_LABELS: Record<OS, string> = {
   macos: 'macOS',
   windows: 'Windows',
@@ -133,7 +157,7 @@ export class LocalFontsSettingTab extends PluginSettingTab {
     return [
       {
         name: 'Fonts folder',
-        desc: 'Vault-relative. May be hidden, for example .fonts',
+        desc: folderDescription(this.plugin.settings.folder),
         control: { type: 'text', key: 'folder', defaultValue: this.plugin.settings.folder },
       },
       ...ROLES.map(([role, name, desc]) =>
@@ -248,7 +272,7 @@ export class LocalFontsSettingTab extends PluginSettingTab {
 
   /** Every one of the seven controls goes through here, so the class that keeps the
    *  "exactly seven controls" test meaningful is applied in exactly one place. */
-  private newControl(name: string, desc: string): Setting {
+  private newControl(name: string, desc: string | DocumentFragment): Setting {
     return (
       new Setting(this.containerEl)
         // Real Obsidian's Setting always carries this class on settingEl; the test mock
@@ -261,7 +285,7 @@ export class LocalFontsSettingTab extends PluginSettingTab {
   }
 
   private renderFolder(): void {
-    this.newControl('Fonts folder', 'Vault-relative. May be hidden, for example .fonts').addText(
+    this.newControl('Fonts folder', folderDescription(this.plugin.settings.folder)).addText(
       (text) => {
         text.setValue(this.plugin.settings.folder);
         // onChange fires per keystroke; committing there would re-walk the whole folder
