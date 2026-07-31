@@ -82,6 +82,20 @@ function splitCssRules(css: string): string[] {
   return rules.filter((rule) => rule !== '');
 }
 
+/**
+ * Wording for a cache that outlived a scan finding nothing. A hidden folder gets the
+ * extra sentence because that combination has one overwhelmingly likely cause: Obsidian
+ * Sync excludes every folder whose name starts with a dot, with no setting to change it,
+ * and `.obsidian` is its only exception. The cache travels inside `.obsidian`; the fonts
+ * do not travel at all.
+ */
+function describeUnverifiedCache(folder: string): string {
+  const base = `No font files were found in ${folder}, so the families below come from the last successful scan and may not exist on this device.`;
+  return folder.startsWith('.')
+    ? `${base} Obsidian Sync does not sync folders whose name starts with a dot, so a synced vault will not carry this one. Moving the fonts to a folder without the leading dot fixes it.`
+    : base;
+}
+
 export default class LocalFontsPlugin extends Plugin {
   override settings!: PluginSettings;
   /** Primary path: a constructable stylesheet, adopted directly by the document. */
@@ -95,6 +109,9 @@ export default class LocalFontsPlugin extends Plugin {
   private skipped: string[] = [];
   /** Message from the most recent failed scan, surfaced by the settings tab. */
   private scanError: string | null = null;
+  /** Set when a scan found nothing but a non-empty cache was kept, so the settings tab
+   *  can say the list it shows was not confirmed against the folder on this device. */
+  private unverified: string | null = null;
 
   override async onload(): Promise<void> {
     const saved = (await this.loadData()) as Partial<PluginSettings> | null;
@@ -155,6 +172,12 @@ export default class LocalFontsPlugin extends Plugin {
   /** Message from the most recent scan that failed outright, or null if none has. */
   lastScanFailure(): string | null {
     return this.scanError;
+  }
+
+  /** Message for a cache that survived a scan which found no files, or null if the last
+   *  scan confirmed the folder. */
+  unverifiedCache(): string | null {
+    return this.unverified;
   }
 
   /** Regenerate and apply the stylesheet from the current cache and settings. */
@@ -238,9 +261,17 @@ export default class LocalFontsPlugin extends Plugin {
     this.skipped = skipped;
     this.scanError = null;
     // A scan that finds nothing is more likely a bad folder path (renamed/moved) than an
-    // intentionally emptied one — keep the last-known-good cache rather than clobbering
-    // it, so the user doesn't lose every font over a typo'd path.
-    if (cache.faces.length > 0 || (this.settings.cache?.faces.length ?? 0) === 0) {
+    // intentionally emptied one, so the last-known-good cache is kept rather than
+    // clobbered and the user doesn't lose every font over a typo'd path. Keeping it
+    // silently is the trap though: data.json lives under .obsidian and syncs, while a
+    // dot-folder never does, so a second device can receive a cache describing fonts it
+    // does not have and show them as if they were present.
+    const keptWithoutConfirming =
+      cache.faces.length === 0 && (this.settings.cache?.faces.length ?? 0) > 0;
+    if (keptWithoutConfirming) {
+      this.unverified = describeUnverifiedCache(this.settings.folder);
+    } else {
+      this.unverified = null;
       this.settings.cache = cache;
       await this.saveSettings();
     }

@@ -288,6 +288,57 @@ describe('LocalFontsPlugin', () => {
     expect(saveData).not.toHaveBeenCalled();
   });
 
+  it('says so when it kept a cache it could not verify against the folder', async () => {
+    // Obsidian Sync copies data.json, which lives under .obsidian, but never a folder
+    // whose name starts with a dot. A second device therefore receives the cache without
+    // the fonts, and the tab would otherwise list families that are not there at all.
+    vi.spyOn(plugin, 'loadData').mockResolvedValue({
+      folder: '.fonts',
+      roles: { text: 'Probe Sans', interface: null, monospace: null, headings: null, emoji: null },
+      hardOverride: false,
+      cache: {
+        version: 2,
+        folder: '.fonts',
+        faces: [
+          {
+            path: '.fonts/probe-sans/probe-sans-400.woff2',
+            format: 'woff2',
+            size: 1,
+            mtime: 1,
+            family: 'Probe Sans',
+            weight: 400,
+            italic: false,
+            colorFormats: [],
+            scripts: [],
+            axes: [],
+            license: null,
+            source: 'name-table',
+          },
+        ],
+      },
+    });
+    vi.spyOn(plugin, 'saveData').mockResolvedValue();
+
+    await plugin.onload();
+    await plugin.rescan();
+
+    const warning = plugin.unverifiedCache();
+    expect(warning).toContain('.fonts');
+    expect(warning).toContain('Sync');
+  });
+
+  it('clears the unverified-cache warning once the folder can be read again', async () => {
+    await plugin.app.vault.adapter.writeBinary(
+      '.fonts/probe-sans-400.ttf',
+      readFixture('probe-sans/probe-sans-400.ttf'),
+    );
+    await plugin.onload();
+
+    await plugin.rescan();
+
+    expect(plugin.unverifiedCache()).toBeNull();
+  });
+
   it('scans real files end-to-end, grouping the result by family', async () => {
     await plugin.app.vault.adapter.writeBinary(
       '.fonts/probe-sans-400.ttf',

@@ -78,6 +78,19 @@ describe('LocalFontsSettingTab', () => {
     expect(heading?.classList.contains('setting-item')).toBe(false);
   });
 
+  it('warns when the families shown were never confirmed against this device', () => {
+    // The Sync case: data.json arrives with the cache, the dot-folder never does.
+    vi.spyOn(plugin, 'unverifiedCache').mockReturnValue(
+      'No font files were found in .fonts, so the families below come from the last successful scan and may not exist on this device.',
+    );
+
+    tab.display();
+
+    // Rendered first in the diagnostics section, ahead of any per-family warning.
+    const warning = tab.containerEl.querySelector('.local-fonts-warning');
+    expect(warning?.textContent).toContain('may not exist on this device');
+  });
+
   it('tells the user the folder is empty rather than showing nothing', () => {
     tab.display();
 

@@ -375,6 +375,10 @@ export class LocalFontsSettingTab extends PluginSettingTab {
   ): HTMLElement {
     const section = parent.createDiv({ cls: 'local-fonts-diagnostics' });
 
+    const unverified = this.plugin.unverifiedCache();
+    if (unverified !== null) {
+      section.createEl('p', { cls: 'local-fonts-warning', text: unverified });
+    }
     const failure = this.plugin.lastScanFailure();
     if (failure !== null) {
       section.createEl('p', {
