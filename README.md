@@ -4,6 +4,8 @@
 [![Release](https://github.com/flowing-abyss/obsidian-local-fonts/actions/workflows/release.yml/badge.svg)](https://github.com/flowing-abyss/obsidian-local-fonts/actions/workflows/release.yml)
 [![Downloads](https://img.shields.io/github/downloads/flowing-abyss/obsidian-local-fonts/total?style=flat-square&label=downloads&color=blue)](https://github.com/flowing-abyss/obsidian-local-fonts/releases)
 
+![Local Fonts](assets/banner.png)
+
 Load fonts from a folder in your vault and apply them to text, interface, monospace,
 headings and emoji. Works on desktop and mobile, and makes no network requests.
 
