@@ -1257,27 +1257,35 @@ describe('LocalFontsSettingTab', () => {
   });
 
   describe('the folder field', () => {
-    it('warns that Sync excludes the folder when it starts with a dot, linking to the help docs', () => {
-      tab.display();
-
+    const folderWarning = (): Element | null | undefined => {
       const folderControl = tab.containerEl.querySelectorAll(
         '.setting-item:not(.setting-item-heading)',
       )[0];
-      const warning = folderControl?.querySelector('.local-fonts-warning');
+      return folderControl?.querySelector('.local-fonts-warning');
+    };
+
+    it('warns that Sync excludes the folder when it starts with a dot, linking to the help docs', () => {
+      plugin.settings.folder = '.fonts';
+      tab.display();
+
+      const warning = folderWarning();
       expect(warning?.textContent).toContain('Obsidian Sync will not sync .folders');
       expect(warning?.querySelector('a')?.getAttribute('href')).toBe(
         'https://obsidian.md/help/sync/settings#Hidden+files+and+folders',
       );
     });
 
-    it('does not warn once the folder no longer starts with a dot', () => {
-      plugin.settings.folder = 'fonts';
+    it('warns about a hidden folder nested under a visible one', () => {
+      plugin.settings.folder = 'assets/.fonts';
       tab.display();
 
-      const folderControl = tab.containerEl.querySelectorAll(
-        '.setting-item:not(.setting-item-heading)',
-      )[0];
-      expect(folderControl?.querySelector('.local-fonts-warning')).toBeNull();
+      expect(folderWarning()?.textContent).toContain('Obsidian Sync will not sync .folders');
+    });
+
+    it('does not warn for the default folder, which is visible', () => {
+      tab.display();
+
+      expect(folderWarning()).toBeNull();
     });
 
     it('commits and rescans once, on blur, rather than on every keystroke', async () => {
@@ -1488,6 +1496,7 @@ describe('LocalFontsSettingTab', () => {
     });
 
     it('folds the Sync warning into the folder description when it starts with a dot', () => {
+      plugin.settings.folder = '.fonts';
       const folder = definitions()[0];
       const desc = folder !== undefined && 'desc' in folder ? folder.desc : undefined;
       expect(desc).toBeInstanceOf(DocumentFragment);
@@ -1499,9 +1508,15 @@ describe('LocalFontsSettingTab', () => {
       );
     });
 
-    it('leaves the folder description plain once it no longer starts with a dot', () => {
-      plugin.settings.folder = 'fonts';
+    it('folds the Sync warning in for a hidden folder nested under a visible one', () => {
+      plugin.settings.folder = 'assets/.fonts';
 
+      const folder = definitions()[0];
+      const desc = folder !== undefined && 'desc' in folder ? folder.desc : undefined;
+      expect((desc as DocumentFragment).textContent).toContain('Obsidian Sync will not sync');
+    });
+
+    it('leaves the folder description plain for the default folder, which is visible', () => {
       const folder = definitions()[0];
       const desc = folder !== undefined && 'desc' in folder ? folder.desc : undefined;
       expect((desc as DocumentFragment).textContent).not.toContain('Obsidian Sync');

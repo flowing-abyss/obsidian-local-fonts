@@ -73,7 +73,7 @@ describe('LocalFontsPlugin', () => {
     await plugin.onload();
 
     expect(plugin.settings.hardOverride).toBe(true);
-    expect(plugin.settings.folder).toBe('.fonts');
+    expect(plugin.settings.folder).toBe('fonts');
   });
 
   it('persists the current settings via saveSettings', async () => {
@@ -329,7 +329,7 @@ describe('LocalFontsPlugin', () => {
 
   it('clears the unverified-cache warning once the folder can be read again', async () => {
     await plugin.app.vault.adapter.writeBinary(
-      '.fonts/probe-sans-400.ttf',
+      'fonts/probe-sans-400.ttf',
       readFixture('probe-sans/probe-sans-400.ttf'),
     );
     await plugin.onload();
@@ -341,7 +341,7 @@ describe('LocalFontsPlugin', () => {
 
   it('scans real files end-to-end, grouping the result by family', async () => {
     await plugin.app.vault.adapter.writeBinary(
-      '.fonts/probe-sans-400.ttf',
+      'fonts/probe-sans-400.ttf',
       readFixture('probe-sans/probe-sans-400.ttf'),
     );
 
@@ -354,7 +354,7 @@ describe('LocalFontsPlugin', () => {
 
   it('rescans automatically once the workspace layout is ready, when the cache is stale', async () => {
     await plugin.app.vault.adapter.writeBinary(
-      '.fonts/probe-sans-400.ttf',
+      'fonts/probe-sans-400.ttf',
       readFixture('probe-sans/probe-sans-400.ttf'),
     );
 
@@ -371,7 +371,7 @@ describe('LocalFontsPlugin', () => {
 
   it('does not rescan once the workspace layout is ready, when the cache is already fresh', async () => {
     await plugin.app.vault.adapter.writeBinary(
-      '.fonts/probe-sans-400.ttf',
+      'fonts/probe-sans-400.ttf',
       readFixture('probe-sans/probe-sans-400.ttf'),
     );
 
@@ -392,24 +392,24 @@ describe('LocalFontsPlugin', () => {
 
   it('reports a file that could not be read, so a bad font is discoverable rather than only console.warn-ed', async () => {
     const adapter = plugin.app.vault.adapter;
-    vi.spyOn(adapter, 'list').mockResolvedValue({ files: ['.fonts/bad-400.ttf'], folders: [] });
+    vi.spyOn(adapter, 'list').mockResolvedValue({ files: ['fonts/bad-400.ttf'], folders: [] });
     vi.spyOn(adapter, 'stat').mockRejectedValue(new Error('EPERM'));
 
     await plugin.onload();
     await plugin.rescan();
 
-    expect(plugin.skippedFiles()).toStrictEqual(['.fonts/bad-400.ttf']);
+    expect(plugin.skippedFiles()).toStrictEqual(['fonts/bad-400.ttf']);
   });
 
   it('clears skippedFiles once a later scan no longer skips anything', async () => {
     const adapter = plugin.app.vault.adapter;
     const list = vi.spyOn(adapter, 'list');
-    list.mockResolvedValueOnce({ files: ['.fonts/bad-400.ttf'], folders: [] });
+    list.mockResolvedValueOnce({ files: ['fonts/bad-400.ttf'], folders: [] });
     vi.spyOn(adapter, 'stat').mockRejectedValueOnce(new Error('EPERM'));
 
     await plugin.onload();
     await plugin.rescan();
-    expect(plugin.skippedFiles()).toStrictEqual(['.fonts/bad-400.ttf']);
+    expect(plugin.skippedFiles()).toStrictEqual(['fonts/bad-400.ttf']);
 
     list.mockResolvedValueOnce({ files: [], folders: [] });
     await plugin.rescan();
@@ -425,7 +425,7 @@ describe('LocalFontsPlugin', () => {
 
   it('surfaces a deferred rescan failure instead of leaving it in console.error only', async () => {
     await plugin.app.vault.adapter.writeBinary(
-      '.fonts/probe-sans-400.ttf',
+      'fonts/probe-sans-400.ttf',
       readFixture('probe-sans/probe-sans-400.ttf'),
     );
     await plugin.onload();

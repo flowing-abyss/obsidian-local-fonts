@@ -7,6 +7,7 @@ import { selectFaces } from './fonts/select.js';
 import type { FaceRecord } from './fonts/types.js';
 import { LocalFontsSettingTab } from './settings-tab.js';
 import { DEFAULT_SETTINGS, type PluginSettings } from './settings.js';
+import { isHiddenPath } from './utils/hidden-path.js';
 import { mergeSettings } from './utils/merge-settings.js';
 
 /**
@@ -91,8 +92,8 @@ function splitCssRules(css: string): string[] {
  */
 function describeUnverifiedCache(folder: string): string {
   const base = `No font files were found in ${folder}, so the families below come from the last successful scan and may not exist on this device.`;
-  return folder.startsWith('.')
-    ? `${base} Obsidian Sync does not sync folders whose name starts with a dot, so a synced vault will not carry this one. Moving the fonts to a folder without the leading dot fixes it.`
+  return isHiddenPath(folder)
+    ? `${base} Obsidian Sync does not sync folders whose name starts with a dot, so a synced vault will not carry this one. Moving the fonts to a folder without a leading dot fixes it.`
     : base;
 }
 

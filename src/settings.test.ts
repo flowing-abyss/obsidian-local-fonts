@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_SETTINGS } from './settings.js';
 
 describe('DEFAULT_SETTINGS', () => {
-  it('defaults to a hidden fonts folder so the note tree stays clean', () => {
-    expect(DEFAULT_SETTINGS.folder).toBe('.fonts');
+  it('defaults to a visible folder, because Obsidian Sync never carries a hidden one', () => {
+    expect(DEFAULT_SETTINGS.folder).toBe('fonts');
   });
 
   it('assigns no family to any role until the user picks one', () => {

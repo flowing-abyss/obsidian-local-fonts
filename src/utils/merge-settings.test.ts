@@ -22,7 +22,7 @@ describe('mergeSettings', () => {
 
   it('does not mutate the defaults object', () => {
     mergeSettings(DEFAULT_SETTINGS, { folder: 'custom-folder' });
-    expect(DEFAULT_SETTINGS.folder).toBe('.fonts');
+    expect(DEFAULT_SETTINGS.folder).toBe('fonts');
   });
 
   it('layers saved role assignments on top of role defaults instead of replacing them wholesale', () => {

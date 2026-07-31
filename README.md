@@ -18,13 +18,13 @@ format all come from the font file itself, so filenames are irrelevant in normal
 Fonts load through resource URLs instead of base64, so the browser fetches only the
 weights a note actually displays. A folder holding forty faces typically loads a dozen.
 
-The folder can be hidden. `.fonts` is the default, which keeps a font collection out of
-your note tree.
+The default folder is `fonts` in your vault root. Any vault-relative path works, hidden
+ones like `.fonts` included, which keeps a font collection out of your note tree.
 
 > [!WARNING]
-> Obsidian Sync excludes hidden files and folders, and `.fonts` is one of them. Fonts kept
-> there will not sync between devices. Either sync the folder some other way, or point this
-> plugin at a folder that does not start with a dot. See
+> Obsidian Sync excludes hidden files and folders, so anything under a folder whose name
+> starts with a dot stays on the device it was added to. Sync that folder some other way,
+> or keep the fonts somewhere visible. See
 > [Hidden files and folders](https://obsidian.md/help/sync/settings#Hidden+files+and+folders)
 > for details.
 
@@ -35,7 +35,7 @@ Create the folder next to `.obsidian` in your vault root and drop font files int
 ```
 📂 My Vault
 ├── 📁 .obsidian/
-└── 📂 .fonts/
+└── 📂 fonts/
     ├── 📁 IBM Plex Sans/
     │   ├── 🔤 Regular.woff2
     │   ├── 🔤 Regular.ttf

@@ -12,6 +12,7 @@ import { explainSelection, type FaceVerdict, type SelectionReason } from './font
 import type { FaceRecord, VariableAxis } from './fonts/types.js';
 import type LocalFontsPlugin from './main.js';
 import type { RoleName } from './settings.js';
+import { isHiddenPath } from './utils/hidden-path.js';
 
 const ROLES: ReadonlyArray<readonly [RoleName, string, string]> = [
   ['text', 'Text', 'Body text in notes'],
@@ -29,15 +30,16 @@ const SYNC_HELP_URL = 'https://obsidian.md/help/sync/settings#Hidden+files+and+f
 
 /**
  * The Fonts folder field's description, with a warning appended when the current value
- * starts with a dot. Obsidian Sync excludes every folder whose name starts with a dot,
- * with no setting to change it, and `.obsidian` is its only exception. This is the one
- * moment a warning can reach someone before they lose fonts to it, rather than after a
- * scan on a second device already came back empty (see `unverifiedCache`).
+ * lies inside a hidden folder at any depth (see `isHiddenPath`). Obsidian Sync excludes
+ * every folder whose name starts with a dot, with no setting to change it, and
+ * `.obsidian` is its only exception. This is the one moment a warning can reach someone
+ * before they lose fonts to it, rather than after a scan on a second device already came
+ * back empty (see `unverifiedCache`).
  */
 function folderDescription(folder: string): DocumentFragment {
   return createFragment((frag) => {
     frag.appendText(FOLDER_DESC);
-    if (folder.startsWith('.')) {
+    if (isHiddenPath(folder)) {
       frag.appendText('. ');
       const warning = frag.createDiv({ cls: 'local-fonts-warning' });
       warning.appendText('Obsidian Sync will not sync .folders. ');
