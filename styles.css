@@ -124,3 +124,10 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
   color: var(--text-muted);
   font-style: italic;
 }
+
+/* Obsidian lays a setting row out as a flex line of info and control. The diagnostics
+   body is a third child of the heading row, so without this the heading text is squeezed
+   into a narrow column with the family cards alongside it. */
+.local-fonts-diagnostics-row {
+  display: block;
+}

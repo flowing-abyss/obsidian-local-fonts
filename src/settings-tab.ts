@@ -150,9 +150,20 @@ export class LocalFontsSettingTab extends PluginSettingTab {
       },
       {
         name: 'Fonts found',
-        render: (setting): void => {
+        // `.setting-item` is a flex row of `.setting-item-info` and
+        // `.setting-item-control`, so the diagnostics body becomes a third flex item and
+        // the heading gets squeezed into a narrow column beside the cards. The row is
+        // switched to a block by `.local-fonts-diagnostics-row` in styles.css so the two
+        // stack instead. Inserting the body as a sibling of the row is not an option:
+        // Obsidian calls `render` before the row is attached, so it has no parent yet.
+        render: (setting): (() => void) => {
           setting.setHeading();
-          this.renderDiagnosticsBody(setting.settingEl, families, engine);
+          setting.settingEl.addClass('local-fonts-diagnostics-row');
+          const section = this.renderDiagnosticsBody(setting.settingEl, families, engine);
+          return (): void => {
+            section.remove();
+            setting.settingEl.removeClass('local-fonts-diagnostics-row');
+          };
         },
       },
     ];
@@ -361,7 +372,7 @@ export class LocalFontsSettingTab extends PluginSettingTab {
     parent: HTMLElement,
     families: Map<string, FaceRecord[]>,
     engine: Engine,
-  ): void {
+  ): HTMLElement {
     const section = parent.createDiv({ cls: 'local-fonts-diagnostics' });
 
     const failure = this.plugin.lastScanFailure();
@@ -384,7 +395,7 @@ export class LocalFontsSettingTab extends PluginSettingTab {
         cls: 'local-fonts-empty',
         text: `No fonts found in ${this.plugin.settings.folder}. Put font files there, one folder per family.`,
       });
-      return;
+      return section;
     }
 
     const sortedEntries = [...families].sort((a, b) => a[0].localeCompare(b[0]));
@@ -392,6 +403,7 @@ export class LocalFontsSettingTab extends PluginSettingTab {
       this.renderFamilyCard(section, family, faces, engine);
     }
     this.renderCheckButton(section);
+    return section;
   }
 
   private renderFamilyCard(

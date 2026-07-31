@@ -1446,6 +1446,32 @@ describe('LocalFontsSettingTab', () => {
       expect(diagnostics !== undefined && 'render' in diagnostics).toBe(true);
     });
 
+    it('marks the heading row so its body stacks below the heading instead of beside it', () => {
+      // `.setting-item` is a flex row of `.setting-item-info` and `.setting-item-control`,
+      // so the diagnostics body lands as a third flex item and the heading is squeezed
+      // into a narrow column beside the cards. styles.css turns the row into a block via
+      // this class; without it the layout breaks, so the class is part of the contract.
+      const definition = definitions()[7];
+      if (definition === undefined || !('render' in definition)) {
+        throw new Error('expected a render definition for the diagnostics section');
+      }
+      const settingEl = createDiv({ cls: 'setting-item' });
+      const setHeading = vi.fn();
+      const setting = { setHeading, settingEl } as unknown as Setting;
+
+      const cleanup = definition.render(setting, {} as unknown as SettingGroup);
+
+      expect(settingEl.hasClass('local-fonts-diagnostics-row')).toBe(true);
+      expect(settingEl.querySelector('.local-fonts-diagnostics')).not.toBeNull();
+      expect(setHeading).toHaveBeenCalledTimes(1);
+
+      // Obsidian may re-render a definition; without cleanup each pass would leave
+      // another copy of every family card behind.
+      cleanup?.();
+      expect(settingEl.querySelector('.local-fonts-diagnostics')).toBeNull();
+      expect(settingEl.hasClass('local-fonts-diagnostics-row')).toBe(false);
+    });
+
     it('offers only colour-glyph families for the Emoji dropdown, matching renderRoles', () => {
       plugin.settings.cache = {
         version: 2,
