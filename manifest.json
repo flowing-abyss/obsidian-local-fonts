@@ -1,7 +1,7 @@
 {
   "id": "local-fonts",
   "name": "Local Fonts",
-  "version": "1.0.3",
+  "version": "1.1.0",
   "minAppVersion": "1.0.3",
   "description": "Load fonts from a folder in your vault and apply them to text, interface, headings, code and emoji.",
   "author": "flowing-abyss",
