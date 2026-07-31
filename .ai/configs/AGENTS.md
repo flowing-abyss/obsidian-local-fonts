@@ -1,6 +1,6 @@
 # Local Fonts — Obsidian community plugin
 
-Loads font files from a folder inside the vault (hidden by default, `.fonts`) and applies them to text, interface, monospace, headings and emoji, on desktop and mobile. TypeScript → `main.js` via esbuild. Run `pnpm run <script>` to see what's available — this file only covers what isn't already enforced by config/tooling or discoverable from the code.
+Loads font files from a folder inside the vault (`fonts` by default, may be hidden) and applies them to text, interface, monospace, headings and emoji, on desktop and mobile. TypeScript → `main.js` via esbuild. Run `pnpm run <script>` to see what's available — this file only covers what isn't already enforced by config/tooling or discoverable from the code.
 
 ## Invariants that no single file makes obvious
 
