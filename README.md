@@ -21,9 +21,30 @@ your note tree.
 
 ## Adding fonts
 
-Drop files into the folder, then open Settings → Local Fonts. Families appear in the
-dropdowns after the folder is scanned. Scanning runs in the background, and only files
-that changed since last time are read again.
+Create the folder next to `.obsidian` in your vault root and drop font files into it:
+
+```
+📂 My Vault
+├── 📁 .obsidian/                     ← Obsidian's own settings
+├── 📂 .fonts/                        ← the plugin reads this folder
+│   ├── 📁 ibm-plex-sans/
+│   │   ├── 🔤 ibm-plex-sans-400.woff2
+│   │   ├── 🔤 ibm-plex-sans-400italic.woff2
+│   │   └── 🔤 ibm-plex-sans-700.woff2
+│   ├── 📁 ibm-plex-mono/
+│   │   └── 🔤 ibm-plex-mono-400.woff2
+│   └── 📁 noto-color-emoji/
+│       ├── 😀 noto-color-emoji-colrv1.woff2    ← used on desktop and Android
+│       └── 😀 noto-color-emoji-svg.woff2       ← used on iOS
+└── 📝 Welcome.md
+```
+
+The subfolders are for your own tidiness. Faces are grouped by the family name read from
+each file, so a single flat folder works just as well.
+
+Then open Settings → Local Fonts. Families appear in the dropdowns after the folder is
+scanned. Scanning runs in the background, and only files that changed since last time are
+read again.
 
 Filenames matter in one situation. When a `.woff2` cannot be decoded, the plugin looks
 for a file with the same name and a different extension and reads metadata from that
