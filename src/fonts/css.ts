@@ -97,6 +97,23 @@ function stack(family: string, emoji: string | null, fallback: string): string {
   return CSS_WIDE_KEYWORDS.has(fallback) ? parts.join(', ') : `${parts.join(', ')}, ${fallback}`;
 }
 
+/**
+ * `html body`, not `body`, and the extra element selector is load-bearing.
+ *
+ * This CSS is delivered inside the plugin's own styles.css element (see main.ts), which
+ * Obsidian appends to the head *before* the theme and before every user snippet —
+ * measured in a real vault: plugin stylesheets sat at index 45, the theme at 46,
+ * snippets at 47 and up. With equal specificity the later rule wins, so a plain
+ * `body { --font-text-override: ... }` in a theme or a snippet would silently take these
+ * roles over. The mechanism this replaced could not lose that way: a constructed sheet
+ * in `adoptedStyleSheets` is ordered after every document stylesheet no matter what.
+ *
+ * Two element names (0-0-2) restore that, without `!important` — which would have gone
+ * further than the old behaviour and started beating inline styles too. Element
+ * selectors only, so this holds in pop-out windows, where the body's classes differ.
+ */
+const ROLE_SCOPE = 'html body';
+
 const HEADING_VARIABLES = [
   '--h1-font',
   '--h2-font',
@@ -182,7 +199,7 @@ export function buildCss(input: BuildCssInput): string {
 
   const declarations = buildDeclarations(roles);
   if (declarations.length > 0) {
-    blocks.push(`body {\n${declarations.join('\n')}\n}`);
+    blocks.push(`${ROLE_SCOPE} {\n${declarations.join('\n')}\n}`);
   }
 
   if (hardOverride) {
@@ -219,7 +236,7 @@ function buildHardOverrides(roles: RoleAssignments): string {
   }
   if (roles.interface !== null) {
     rules.push(
-      `body {\n  font-family: ${stack(roles.interface, emoji, 'sans-serif')} !important;\n}`,
+      `${ROLE_SCOPE} {\n  font-family: ${stack(roles.interface, emoji, 'sans-serif')} !important;\n}`,
     );
   }
   if (roles.monospace !== null) {

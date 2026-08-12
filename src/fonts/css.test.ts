@@ -99,7 +99,7 @@ describe('buildCss', () => {
     const styleRules = Array.from(sheet.cssRules).filter(
       (rule): rule is CSSStyleRule => rule instanceof CSSStyleRule,
     );
-    const body = styleRules.find((rule) => rule.selectorText === 'body');
+    const body = styleRules.find((rule) => rule.selectorText === 'html body');
     expect(body).toBeDefined();
 
     for (const role of ['text', 'interface', 'monospace']) {
@@ -109,6 +109,33 @@ describe('buildCss', () => {
       expect(themeValue).toBeTruthy();
       expect(themeValue).toBe(overrideValue);
     }
+  });
+
+  // Measured in a real vault: Obsidian appends plugin stylesheets before the theme and
+  // before every snippet, so with equal specificity theirs would win. The adopted
+  // stylesheet this delivery replaced could not lose that way, being ordered after every
+  // document stylesheet by definition. Two element names restore it — asserted as "beats
+  // a bare `body` rule", not as a literal selector string, so the reason survives a
+  // future change of how the extra specificity is spelled.
+  it('scopes the role variables above a bare body rule, which a theme or snippet could set later', () => {
+    const css = buildCss({
+      faces: [face({})],
+      roles: { ...DEFAULT_SETTINGS.roles, text: 'Probe Sans' },
+      hardOverride: false,
+      resolve,
+    });
+
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(css);
+    const rule = Array.from(sheet.cssRules)
+      .filter((r): r is CSSStyleRule => r instanceof CSSStyleRule)
+      .find((r) => r.style.getPropertyValue('--font-text-override') !== '');
+    expect(rule).toBeDefined();
+
+    // No class, id or attribute — those differ between the main window and a pop-out.
+    expect(rule?.selectorText).not.toMatch(/[.#[]/);
+    // ...but more than one element name, so it outranks `body { ... }`.
+    expect(rule?.selectorText.trim().split(/\s+/).length).toBeGreaterThan(1);
   });
 
   it('never emits the Obsidian placeholder font family "??", which resolves to no font at all', () => {
@@ -200,11 +227,11 @@ describe('buildCss', () => {
       (rule): rule is CSSStyleRule => rule instanceof CSSStyleRule,
     );
 
-    // The container rule (`body { font-family: ... !important }`) must carry no
+    // The container rule (`html body { font-family: ... !important }`) must carry no
     // `:not(.svg-icon)` compound: a compound `:not()` on the container itself never
     // excludes anything (`body` is never `.svg-icon`), so keeping it would look like
     // protection while doing nothing — worse than no exclusion at all.
-    const container = styleRules.find((rule) => rule.selectorText === 'body');
+    const container = styleRules.find((rule) => rule.selectorText === 'html body');
     expect(container).toBeDefined();
     expect(container?.selectorText).not.toContain(':not(.svg-icon)');
 
