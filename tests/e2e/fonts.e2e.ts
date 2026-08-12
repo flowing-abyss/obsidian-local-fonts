@@ -3,9 +3,9 @@ import { describe, it } from 'mocha';
 
 // The plugin appends its generated CSS to the `<style>` element Obsidian loaded
 // styles.css into, identified by the `--local-fonts-sheet` marker rule that file
-// declares. That is the only delivery route Obsidian mirrors into pop-out windows, the
-// settings dialog among them, so the assertions below read the element's *text* — the
-// thing that gets cloned — rather than any CSSOM view of it.
+// declares. That is the only delivery route Obsidian mirrors into pop-out windows, so
+// the assertions below read the element's *text* — the thing that gets cloned — rather
+// than any CSSOM view of it.
 //
 // The read is duplicated inline in each `executeObsidian` callback rather than shared,
 // because each callback is serialized and executed inside Obsidian on its own — it
@@ -26,6 +26,69 @@ describe('local fonts apply in a real Obsidian', () => {
         ),
       { timeout: 10_000, timeoutMsg: 'plugin never injected any @font-face rules' },
     );
+  });
+
+  // The guard for the bug this delivery mechanism exists to fix. Everything else in
+  // this file reads the main window, where every previous mechanism also worked — only
+  // a second, real Document can tell whether the CSS actually crossed the boundary.
+  // Obsidian's own settings dialog was one of these windows on the desktop build where
+  // this was found, so a regression here is the "fonts apply everywhere except inside a
+  // plugin's settings tab" report all over again. Settings is not driven directly: it
+  // opens in a separate window only under some versions and platforms, which would make
+  // for a test that passes by not exercising anything. A workspace pop-out is the same
+  // second-document condition, unconditionally.
+  //
+  // The pop-out is inspected from inside the main window through its `win` handle
+  // rather than by switching WebDriver window handles: the assertion is about CSS
+  // reaching a second document, and reading it directly keeps the test from depending
+  // on how the driver enumerates Obsidian's windows.
+  it('reaches a pop-out window, which only mirrored element text ever does', async () => {
+    const result = await browser.executeObsidian(async ({ app }) => {
+      const workspace = app.workspace as unknown as {
+        openPopoutLeaf: () => { openFile: (file: unknown) => Promise<void> };
+        floatingSplit: { children: Array<{ win: Window }> };
+      };
+      const leaf = workspace.openPopoutLeaf();
+      const file = app.vault.getFiles().find((f) => f.path === 'Welcome.md');
+      if (file === undefined) {
+        throw new Error('fixture note Welcome.md is missing from the vault');
+      }
+      await leaf.openFile(file);
+
+      try {
+        // Obsidian clones the head into the new window asynchronously; poll for the
+        // condition rather than sleeping on a margin that ages badly.
+        let variable = '';
+        let fontFaceRules = 0;
+        for (let attempt = 0; attempt < 40; attempt++) {
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          const win = workspace.floatingSplit.children[0]?.win;
+          if (win === undefined) {
+            continue;
+          }
+          const doc = win.document;
+          fontFaceRules = Array.from(doc.head.querySelectorAll('style')).filter(
+            (el) =>
+              el.textContent.includes('--local-fonts-sheet') &&
+              el.textContent.includes('Probe Sans'),
+          ).length;
+          variable = win.getComputedStyle(doc.body).getPropertyValue('--font-text-override').trim();
+          if (variable !== '' && fontFaceRules > 0) {
+            break;
+          }
+        }
+        return { variable, fontFaceRules };
+      } finally {
+        for (const child of [...workspace.floatingSplit.children]) {
+          child.win.close();
+        }
+      }
+    });
+
+    // The generated CSS is present in the pop-out's own copy of styles.css...
+    expect(result.fontFaceRules).toBe(1);
+    // ...and Obsidian's cascade in that window actually resolves to it.
+    expect(result.variable).toContain('Probe Sans');
   });
 
   it('applies its stylesheet exactly once, into styles.css and nowhere else', async () => {

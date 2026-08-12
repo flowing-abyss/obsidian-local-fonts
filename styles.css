@@ -6,12 +6,18 @@ the user's active theme. Reference: https://docs.obsidian.md/Plugins/User+interf
 */
 
 /*
- * Marker declaration only — never read as a real custom property. src/main.ts's WebKit
- * <16.4 fallback (adoptedStyleSheets is the primary path everywhere else) needs to find
- * *this* stylesheet among document.styleSheets to inject generated @font-face/role rules
- * into, without creating any element itself. Matching on this property's presence is
- * reliable regardless of what href or index Obsidian loads this file at; matching on
- * href or index would not be.
+ * Marker declaration only — never read as a real custom property. It is how src/main.ts
+ * finds the style element Obsidian loaded this file into, among every stylesheet in the
+ * document, so it can append the generated @font-face and role rules to this element's
+ * text. That element is the delivery vehicle because it is the only one
+ * Obsidian mirrors into pop-out windows; see findPluginStyleElement in src/main.ts for
+ * the full reasoning.
+ *
+ * Matching on this property is reliable regardless of what href or index Obsidian loads
+ * this file at; matching on href or index would not be. The VALUE has to match too, not
+ * just the property: `all: unset` resets custom properties as well, so in Chromium a
+ * rule using it answers getPropertyValue with something other than '' for any custom
+ * property. Keep this value and SHEET_MARKER_VALUE in src/main.ts in step.
  */
 :root {
   --local-fonts-sheet: 1;

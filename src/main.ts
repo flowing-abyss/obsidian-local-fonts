@@ -21,13 +21,14 @@ const SHEET_MARKER_PROPERTY = '--local-fonts-sheet';
 /**
  * The marker's exact value, which has to match, not merely be present.
  *
- * `all: unset` (and its `initial`/`revert` siblings) resets *every* property including
- * custom ones, so in Chromium a rule that uses it reports a value for any custom
- * property asked about — `getPropertyValue('--local-fonts-sheet')` comes back as
- * `'unset'`, not `''`. Testing only for "non-empty" therefore matched the first
- * stylesheet in the document that used `all: unset` anywhere, which in a real vault
- * meant a completely unrelated plugin's stylesheet got this plugin's CSS appended to
- * it. Compare against the value styles.css actually declares.
+ * `all: unset` resets *every* property including custom ones, so in Chromium a rule
+ * that uses it reports something rather than the empty string for any custom property
+ * asked about. Observed in a running Obsidian: a presence test for
+ * `--local-fonts-sheet` matched Excalidraw's stylesheet, whose rules reset with
+ * `all: unset`, and this plugin appended its CSS there instead of into its own
+ * styles.css. (What Chromium reports for such a property was not pinned down, and does
+ * not need to be — anything other than `1` is not this marker.) Compare against the
+ * value styles.css actually declares.
  */
 const SHEET_MARKER_VALUE = '1';
 
@@ -49,9 +50,12 @@ const STYLE_ELEMENT_TIMEOUT_MS = 10_000;
  * element's `textContent` is therefore the one injection route that reaches every
  * window, and it needs no per-window bookkeeping at all.
  *
- * The `.modal-container` Obsidian's own settings dialog lives in is one of those
- * pop-out windows on desktop, which is how "fonts apply everywhere except in settings"
- * came to be a symptom of the same bug.
+ * Obsidian's own settings dialog can be one of those windows: observed on desktop
+ * (1.12, macOS), `app.setting` opened into a separate `Window` whose document had an
+ * empty `adoptedStyleSheets` and the theme's placeholder font values. That is how
+ * "fonts apply everywhere except inside a plugin's settings tab" turned out to be a
+ * symptom of this same bug. Whether settings opens that way appears to depend on the
+ * version and the platform, so treat it as one case this covers rather than a rule.
  */
 function findPluginStyleElement(): HTMLStyleElement | null {
   for (const sheet of Array.from(document.styleSheets)) {
@@ -94,6 +98,13 @@ export default class LocalFontsPlugin extends Plugin {
   /** styles.css as Obsidian loaded it, captured before the first write so every
    *  reapply rebuilds from the static rules instead of appending to its own output. */
   private baseCss = '';
+  /** The exact text this plugin last wrote, so a later apply can tell its own output
+   *  apart from styles.css having been reloaded underneath it. */
+  private written = '';
+  /** Set by `onunload`, so work already in flight cannot re-inject after it. */
+  private unloaded = false;
+  /** Whether a `MutationObserver` is already waiting for the style element. */
+  private waiting = false;
   /** Paths dropped by the most recent scan, surfaced by the settings tab. */
   private skipped: string[] = [];
   /** Message from the most recent failed scan, surfaced by the settings tab. */
@@ -103,6 +114,7 @@ export default class LocalFontsPlugin extends Plugin {
   private unverified: string | null = null;
 
   override async onload(): Promise<void> {
+    this.unloaded = false;
     const saved = (await this.loadData()) as Partial<PluginSettings> | null;
     this.settings = mergeSettings(DEFAULT_SETTINGS, saved);
 
@@ -138,6 +150,8 @@ export default class LocalFontsPlugin extends Plugin {
     }
     this.styleEl = null;
     this.baseCss = '';
+    this.written = '';
+    this.unloaded = true;
   }
 
   async saveSettings(): Promise<void> {
@@ -172,12 +186,32 @@ export default class LocalFontsPlugin extends Plugin {
    * repeated calls idempotent, so there is nothing to clean up between applies.
    */
   applyFonts(): void {
+    // A rescan started before the plugin was disabled can resolve after it, and putting
+    // the CSS back at that point would quietly undo the unload.
+    if (this.unloaded) {
+      return;
+    }
+    // A cached element that is no longer in the document is Obsidian having replaced the
+    // whole `<style>` tag rather than rewriting it — writing into the detached node would
+    // succeed silently and change nothing on screen, so drop it and look again.
+    if (this.styleEl?.isConnected === false) {
+      this.styleEl = null;
+    }
     this.styleEl ??= this.locateStyleElement();
     if (this.styleEl === null) {
       return;
     }
+    // Anything in the element that this plugin did not put there is styles.css having
+    // been reloaded underneath it. Whether Obsidian rewrites this element in place on a
+    // CSS change or replaces it outright was not established — the check above covers
+    // replacement, this one covers a rewrite, and between them the next apply cannot
+    // paste a stale copy of the file back over the fresh one.
+    if (this.styleEl.textContent !== this.written) {
+      this.baseCss = this.styleEl.textContent;
+    }
     const css = this.buildStylesheet();
-    this.styleEl.textContent = css === '' ? this.baseCss : `${this.baseCss}\n\n${css}`;
+    this.written = css === '' ? this.baseCss : `${this.baseCss}\n\n${css}`;
+    this.styleEl.textContent = this.written;
   }
 
   /** Find the element once and remember what styles.css shipped with. */
@@ -187,6 +221,7 @@ export default class LocalFontsPlugin extends Plugin {
       return null;
     }
     this.baseCss = el.textContent;
+    this.written = el.textContent;
     return el;
   }
 
@@ -197,10 +232,17 @@ export default class LocalFontsPlugin extends Plugin {
    * so this reports rather than throws, and reports once rather than on every apply.
    */
   private applyWhenStyleElementArrives(): void {
+    // A second `onload` without an unload in between would otherwise leave two of these
+    // running, and the "reports once" above would become "reports once per onload".
+    if (this.waiting) {
+      return;
+    }
+    this.waiting = true;
     const observer = new MutationObserver(() => {
       this.applyFonts();
       if (this.styleEl !== null) {
         observer.disconnect();
+        window.clearTimeout(giveUp);
       }
     });
     observer.observe(document.head, { childList: true });
@@ -217,6 +259,7 @@ export default class LocalFontsPlugin extends Plugin {
     this.register(() => {
       observer.disconnect();
       window.clearTimeout(giveUp);
+      this.waiting = false;
     });
   }
 

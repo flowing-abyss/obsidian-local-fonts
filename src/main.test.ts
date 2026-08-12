@@ -129,9 +129,9 @@ describe('LocalFontsPlugin', () => {
     expect(styleEl.textContent).toBe(MARKER_CSS);
   });
 
-  // The regression this guards: pop-out windows, the settings dialog among them on
-  // desktop, are separate documents that Obsidian fills by cloning the main document's
-  // `<style>` elements and mirroring later text edits into the clones. CSS delivered
+  // The regression this guards: pop-out windows are separate documents that Obsidian
+  // fills by cloning the main document's `<style>` elements and mirroring later text
+  // edits into the clones. CSS delivered
   // any other way — an adopted constructed sheet, rules pushed through `insertRule` —
   // exists only in the CSSOM of the main document and never crosses that boundary, so
   // every pop-out rendered with the theme's fonts instead of the vault's.
@@ -234,6 +234,59 @@ describe('LocalFontsPlugin', () => {
     expect(styleEl.textContent).toBe(afterFirstLoad);
   });
 
+  // Obsidian rewrites the element in place when styles.css changes on disk. Holding the
+  // text captured at load time as the base forever would paste the old file back over
+  // the new one on the next settings change, silently undoing the reload.
+  it('picks up a styles.css that was reloaded underneath it', async () => {
+    vi.spyOn(plugin, 'loadData').mockResolvedValue({
+      roles: { text: 'Probe Sans', interface: null, monospace: null, headings: null, emoji: null },
+    });
+    await plugin.onload();
+    expect(styleEl.textContent).toContain('Probe Sans');
+
+    const reloaded = `${MARKER_CSS}\n.local-fonts-new { color: red; }`;
+    styleEl.textContent = reloaded;
+    plugin.applyFonts();
+
+    expect(styleEl.textContent).toContain('.local-fonts-new');
+    expect(styleEl.textContent).toContain('Probe Sans');
+    // ...and the generated CSS still appears exactly once, not once per apply.
+    expect(styleEl.textContent.match(/--font-text-override/g)).toHaveLength(1);
+  });
+
+  // Writing into a node that is no longer in the document succeeds and changes nothing
+  // on screen, which is the worst shape a failure can take here — silent.
+  it('finds the replacement when Obsidian swaps the whole style element out', async () => {
+    vi.spyOn(plugin, 'loadData').mockResolvedValue({
+      roles: { text: 'Probe Sans', interface: null, monospace: null, headings: null, emoji: null },
+    });
+    await plugin.onload();
+
+    styleEl.remove();
+    const replacement = installPluginStyles();
+    try {
+      plugin.applyFonts();
+
+      expect(replacement.textContent).toContain('Probe Sans');
+    } finally {
+      replacement.remove();
+      document.head.append(styleEl);
+    }
+  });
+
+  // A rescan started before the plugin was disabled can resolve after it.
+  it('does not put its CSS back after unload', async () => {
+    vi.spyOn(plugin, 'loadData').mockResolvedValue({
+      roles: { text: 'Probe Sans', interface: null, monospace: null, headings: null, emoji: null },
+    });
+    await plugin.onload();
+
+    plugin.onunload();
+    plugin.applyFonts();
+
+    expect(styleEl.textContent).toBe(MARKER_CSS);
+  });
+
   it('logs rather than throws when the plugin stylesheet never turns up', async () => {
     styleEl.remove();
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -294,9 +347,9 @@ describe('LocalFontsPlugin', () => {
     expect(styleEl.textContent).toContain('--local-fonts-sheet');
   });
 
-  // Found live: `all: unset` resets custom properties too, so in Chromium any rule
-  // using it answers `getPropertyValue('--local-fonts-sheet')` with `'unset'` rather
-  // than `''`. A presence check matched the first such rule in the document and this
+  // Found live: `all: unset` resets custom properties too, so in Chromium a rule using
+  // it answers `getPropertyValue` with something other than `''` for any custom
+  // property. A presence check matched the first such rule in the document and this
   // plugin appended its CSS to a stranger's stylesheet (Excalidraw's, in the vault
   // where it turned up). The marker's value has to match, not merely exist.
   it('ignores a stylesheet whose rules only report the marker because they use all: unset', async () => {
@@ -306,8 +359,9 @@ describe('LocalFontsPlugin', () => {
     const impostorCss = '.impostor { all: unset; }';
     const impostor = document.head.createEl(STYLE_TAG);
     impostor.textContent = impostorCss;
-    // jsdom does not expand `all`, so the reported value is stubbed to what Chromium
-    // actually returns for an undeclared custom property under `all: unset`.
+    // jsdom does not expand `all`, so the reported value is stubbed. What matters is
+    // that it is non-empty and is not the marker's own value — the exact string
+    // Chromium reports here was never pinned down, and nothing depends on it.
     const rules = impostor.sheet?.cssRules;
     const rule = rules?.[0];
     if (rule instanceof CSSStyleRule) {
