@@ -8,7 +8,7 @@
 // Run standalone (`pnpm run release:check`) against an already-built main.js,
 // or as part of `pnpm run verify`, which runs it right after `pnpm run build`.
 
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { builtinModules } from 'node:module';
 import path from 'node:path';
 import process from 'node:process';
@@ -98,12 +98,19 @@ function checkVersionsConsistency(manifest) {
 }
 
 function checkMainJs(manifest) {
-  if (!existsSync('main.js')) {
+  // One read, rather than exists-then-stat-then-read: three separate trips to the same
+  // path can each see a different file, and the build that produces main.js may still
+  // be writing it. Reading once and deriving everything from that buffer is both
+  // race-free (js/file-system-race) and simpler.
+  let contents;
+  try {
+    contents = readFileSync('main.js');
+  } catch {
     errors.push('main.js is missing — run `pnpm run build` first.');
     return;
   }
 
-  const bytes = statSync('main.js').size;
+  const bytes = contents.byteLength;
   if (bytes === 0) {
     errors.push('main.js is empty.');
     return;
@@ -115,7 +122,7 @@ function checkMainJs(manifest) {
   }
 
   if (manifest?.isDesktopOnly === false) {
-    checkNoDesktopOnlyRequires(readFileSync('main.js', 'utf8'));
+    checkNoDesktopOnlyRequires(contents.toString('utf8'));
   }
 }
 
@@ -139,11 +146,16 @@ function checkNoDesktopOnlyRequires(mainJsContent) {
 }
 
 function checkStylesCss() {
-  if (!existsSync('styles.css')) {
+  // styles.css is optional, so a missing file is not an error — but see checkMainJs:
+  // one read answers both questions without the path being looked up twice.
+  let contents;
+  try {
+    contents = readFileSync('styles.css');
+  } catch {
     return;
   }
 
-  if (statSync('styles.css').size === 0) {
+  if (contents.byteLength === 0) {
     errors.push('styles.css exists but is empty — remove it or add real styles.');
   }
 }
@@ -160,10 +172,9 @@ function checkRequiredRepoFiles() {
 
 function readJsonFile(relativePath) {
   const filePath = path.join(process.cwd(), relativePath);
-  if (!existsSync(filePath)) {
-    return null;
-  }
-
+  // Missing and unparseable both mean "no manifest to check" to every caller, and the
+  // read already reports the first — so there is nothing for a prior existsSync to add
+  // beyond a second look at a path that could have changed in between.
   try {
     return JSON.parse(readFileSync(filePath, 'utf8'));
   } catch {
