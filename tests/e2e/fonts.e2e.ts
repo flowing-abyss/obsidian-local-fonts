@@ -1,13 +1,11 @@
 import { browser, expect } from '@wdio/globals';
 import { describe, it } from 'mocha';
 
-// Obsidian's Electron (desktop) and Android WebView are both well past Chromium 73, so
-// `supportsAdoptedStyleSheets()` in src/main.ts is true on both platforms this suite
-// targets: the plugin applies its CSS via `document.adoptedStyleSheets`, NOT the
-// `<style id="local-fonts-style">` fallback element. (That fallback only fires on WebKit
-// below 16.4 — iOS, which this suite does not cover.) Assertions below read whichever
-// mechanism is actually active instead of assuming the style-element path, so a real
-// pass here can't be a false green from an empty `getElementById` lookup.
+// The plugin appends its generated CSS to the `<style>` element Obsidian loaded
+// styles.css into, identified by the `--local-fonts-sheet` marker rule that file
+// declares. That is the only delivery route Obsidian mirrors into pop-out windows, the
+// settings dialog among them, so the assertions below read the element's *text* — the
+// thing that gets cloned — rather than any CSSOM view of it.
 //
 // The read is duplicated inline in each `executeObsidian` callback rather than shared,
 // because each callback is serialized and executed inside Obsidian on its own — it
@@ -19,40 +17,41 @@ describe('local fonts apply in a real Obsidian', () => {
   beforeEach(async () => {
     await browser.waitUntil(
       async () =>
-        browser.executeObsidian(() => {
-          const styleEl = document.getElementById('local-fonts-style');
-          if (styleEl !== null) return styleEl.textContent.includes('@font-face');
-          return Array.from(document.adoptedStyleSheets).some((sheet) =>
-            Array.from(sheet.cssRules).some((rule) => rule.cssText.includes('@font-face')),
-          );
-        }),
+        browser.executeObsidian(() =>
+          Array.from(document.head.querySelectorAll('style')).some(
+            (el) =>
+              el.textContent.includes('--local-fonts-sheet') &&
+              el.textContent.includes('@font-face'),
+          ),
+        ),
       { timeout: 10_000, timeoutMsg: 'plugin never injected any @font-face rules' },
     );
   });
 
-  it('applies its stylesheet exactly once — via adoptedStyleSheets on this platform, not a duplicated element', async () => {
-    const count = await browser.executeObsidian(() => {
-      const styleElCount = document.querySelectorAll('#local-fonts-style').length;
-      const adoptedCount = Array.from(document.adoptedStyleSheets).filter((sheet) =>
-        Array.from(sheet.cssRules).some((rule) => rule.cssText.includes('@font-face')),
+  it('applies its stylesheet exactly once, into styles.css and nowhere else', async () => {
+    const placements = await browser.executeObsidian(() => {
+      const inStyleElements = Array.from(document.head.querySelectorAll('style')).filter((el) =>
+        el.textContent.includes('Probe Sans'),
       ).length;
-      return styleElCount + adoptedCount;
+      // A constructed sheet is invisible to pop-out windows, so a copy landing there
+      // would mean fonts silently missing outside the main window — not a duplicate
+      // that merely wastes memory.
+      const adopted = Array.from(document.adoptedStyleSheets).filter((sheet) =>
+        Array.from(sheet.cssRules).some((rule) => rule.cssText.includes('Probe Sans')),
+      ).length;
+      return { inStyleElements, adopted };
     });
 
-    expect(count).toBe(1);
+    expect(placements.inStyleElements).toBe(1);
+    expect(placements.adopted).toBe(0);
   });
 
   it('serves fonts by resource URL, never base64 — the performance premise of the design', async () => {
     const css = await browser.executeObsidian(() => {
-      const styleEl = document.getElementById('local-fonts-style');
-      if (styleEl !== null) return styleEl.textContent;
-      for (const sheet of document.adoptedStyleSheets) {
-        const text = Array.from(sheet.cssRules)
-          .map((rule) => rule.cssText)
-          .join('\n');
-        if (text.includes('@font-face')) return text;
-      }
-      return '';
+      const el = Array.from(document.head.querySelectorAll('style')).find((style) =>
+        style.textContent.includes('--local-fonts-sheet'),
+      );
+      return el?.textContent ?? '';
     });
 
     expect(css).not.toContain('base64');
@@ -65,8 +64,8 @@ describe('local fonts apply in a real Obsidian', () => {
     // point at the hidden fonts folder and must not use a data: URI.
     expect(css).toMatch(/url\(["'](?!data:)[a-z]+:\/\//i);
     expect(css).toContain('/.fonts/');
-    // Quoting is matched loosely (' or ") because this reads CSSOM's `cssText`
-    // serialization, which normalizes to double quotes regardless of how css.ts wrote it.
+    // Quoting is matched loosely (' or ") so the assertion does not pin down which one
+    // css.ts happens to emit.
   });
 
   it('loads a font from the hidden .fonts folder, proving dot-folder access works', async () => {
@@ -83,18 +82,12 @@ describe('local fonts apply in a real Obsidian', () => {
         if (f.family.includes('Probe')) registered = true;
       });
 
-      const cssBlocks: string[] = [];
-      const styleEl = document.getElementById('local-fonts-style');
-      if (styleEl !== null) {
-        // css.ts joins blocks with a blank line between them (see buildCss), so split
-        // back into one block per @font-face / rule, matching the per-rule granularity
-        // of the adoptedStyleSheets branch below.
-        cssBlocks.push(...styleEl.textContent.split('\n\n'));
-      } else {
-        for (const sheet of document.adoptedStyleSheets) {
-          cssBlocks.push(...Array.from(sheet.cssRules).map((rule) => rule.cssText));
-        }
-      }
+      const styleEl = Array.from(document.head.querySelectorAll('style')).find((el) =>
+        el.textContent.includes('--local-fonts-sheet'),
+      );
+      // css.ts joins blocks with a blank line between them (see buildCss), so split
+      // back into one block per @font-face / rule.
+      const cssBlocks = (styleEl?.textContent ?? '').split('\n\n');
 
       let probeSrcUrl = '';
       for (const block of cssBlocks) {

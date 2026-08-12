@@ -11,39 +11,58 @@ import { isHiddenPath } from './utils/hidden-path.js';
 import { mergeSettings } from './utils/merge-settings.js';
 
 /**
- * `adoptedStyleSheets` needs Chromium 73+ or WebKit 16.4+. Obsidian's own minimum is
- * iOS/iPadOS 14.5 (per the App Store listing), which is below that — so real installs
- * on iOS/iPadOS 14.5–16.3 lack it. Feature-detect rather than assume.
- */
-function supportsAdoptedStyleSheets(): boolean {
-  return 'adoptedStyleSheets' in document && typeof CSSStyleSheet === 'function';
-}
-
-/**
  * Marker custom property declared in styles.css (`:root { --local-fonts-sheet: 1 }`),
- * used to find this plugin's own stylesheet among `document.styleSheets` for the
- * fallback path below. Matching on content, rather than `href` or position, survives
- * Obsidian bundling this file under whatever path or index it chooses.
+ * used to find this plugin's own `<style>` element among `document.styleSheets`.
+ * Matching on content, rather than `href` or position, survives Obsidian bundling this
+ * file under whatever path or index it chooses.
  */
 const SHEET_MARKER_PROPERTY = '--local-fonts-sheet';
 
 /**
- * Locates this plugin's own stylesheet — the one Obsidian loaded from styles.css —
- * among every stylesheet in the document, by looking for `SHEET_MARKER_PROPERTY`. Used
- * only by the WebKit-below-16.4 fallback, to inject generated CSS via `insertRule`
- * without creating any element (`no-forbidden-elements` exists precisely to stop a
- * plugin from doing that).
+ * The marker's exact value, which has to match, not merely be present.
+ *
+ * `all: unset` (and its `initial`/`revert` siblings) resets *every* property including
+ * custom ones, so in Chromium a rule that uses it reports a value for any custom
+ * property asked about — `getPropertyValue('--local-fonts-sheet')` comes back as
+ * `'unset'`, not `''`. Testing only for "non-empty" therefore matched the first
+ * stylesheet in the document that used `all: unset` anywhere, which in a real vault
+ * meant a completely unrelated plugin's stylesheet got this plugin's CSS appended to
+ * it. Compare against the value styles.css actually declares.
  */
-function findPluginStyleSheet(): CSSStyleSheet | null {
+const SHEET_MARKER_VALUE = '1';
+
+/** How long to wait for Obsidian to append styles.css before reporting it missing. */
+const STYLE_ELEMENT_TIMEOUT_MS = 10_000;
+
+/**
+ * Locates the `<style>` element Obsidian created for this plugin's styles.css, by
+ * looking for `SHEET_MARKER_PROPERTY` among every stylesheet in the document and
+ * taking that sheet's owner node.
+ *
+ * That element is the delivery vehicle for the generated CSS, and the reason is
+ * pop-out windows. Every pop-out is a separate `Window` with its own `Document`, and
+ * Obsidian populates it by cloning the main document's `<style>` elements and keeping
+ * the clones in sync with later edits — text content only. Nothing else crosses that
+ * boundary: a constructed `CSSStyleSheet` cannot even be adopted by a second document
+ * (Chromium throws `NotAllowedError`), and rules inserted through the CSSOM never
+ * reach the clone, because they are not part of the element's text. Appending to this
+ * element's `textContent` is therefore the one injection route that reaches every
+ * window, and it needs no per-window bookkeeping at all.
+ *
+ * The `.modal-container` Obsidian's own settings dialog lives in is one of those
+ * pop-out windows on desktop, which is how "fonts apply everywhere except in settings"
+ * came to be a symptom of the same bug.
+ */
+function findPluginStyleElement(): HTMLStyleElement | null {
   for (const sheet of Array.from(document.styleSheets)) {
     try {
       const hasMarker = Array.from(sheet.cssRules).some(
         (rule) =>
           rule instanceof CSSStyleRule &&
-          rule.style.getPropertyValue(SHEET_MARKER_PROPERTY).trim() !== '',
+          rule.style.getPropertyValue(SHEET_MARKER_PROPERTY).trim() === SHEET_MARKER_VALUE,
       );
-      if (hasMarker) {
-        return sheet;
+      if (hasMarker && sheet.ownerNode instanceof HTMLStyleElement) {
+        return sheet.ownerNode;
       }
     } catch {
       // A cross-origin stylesheet throws on `cssRules` access; it is never this
@@ -51,36 +70,6 @@ function findPluginStyleSheet(): CSSStyleSheet | null {
     }
   }
   return null;
-}
-
-/**
- * Splits a flat run of top-level CSS rules (as produced by `buildCss`: `@font-face`
- * blocks and plain selector blocks, never nested) into one string per rule, suitable
- * for individual `CSSStyleSheet.insertRule` calls — which, unlike `replaceSync`, accept
- * only a single rule at a time. Tracks brace depth rather than splitting on blank lines,
- * so it stays correct regardless of `buildCss`'s exact formatting.
- */
-function splitCssRules(css: string): string[] {
-  const rules: string[] = [];
-  let depth = 0;
-  let start = 0;
-  for (let i = 0; i < css.length; i++) {
-    const ch = css[i];
-    if (ch === '{') {
-      depth += 1;
-      continue;
-    }
-    if (ch !== '}') {
-      continue;
-    }
-    depth -= 1;
-    if (depth !== 0) {
-      continue;
-    }
-    rules.push(css.slice(start, i + 1).trim());
-    start = i + 1;
-  }
-  return rules.filter((rule) => rule !== '');
 }
 
 /**
@@ -99,13 +88,12 @@ function describeUnverifiedCache(folder: string): string {
 
 export default class LocalFontsPlugin extends Plugin {
   override settings!: PluginSettings;
-  /** Primary path: a constructable stylesheet, adopted directly by the document. */
-  private sheet: CSSStyleSheet | null = null;
-  /** Fallback for WebKit below 16.4: this plugin's own stylesheet, found once and reused. */
-  private fallbackSheet: CSSStyleSheet | null = null;
-  /** How many rules at the tail of `fallbackSheet` this plugin inserted, so a reapply
-   *  removes exactly those and never touches styles.css's own static rules. */
-  private fallbackRuleCount = 0;
+  /** This plugin's own `<style>` element, found once and reused. See
+   *  `findPluginStyleElement` for why the generated CSS goes here and nowhere else. */
+  private styleEl: HTMLStyleElement | null = null;
+  /** styles.css as Obsidian loaded it, captured before the first write so every
+   *  reapply rebuilds from the static rules instead of appending to its own output. */
+  private baseCss = '';
   /** Paths dropped by the most recent scan, surfaced by the settings tab. */
   private skipped: string[] = [];
   /** Message from the most recent failed scan, surfaced by the settings tab. */
@@ -122,6 +110,15 @@ export default class LocalFontsPlugin extends Plugin {
     this.applyFonts();
     this.addSettingTab(new LocalFontsSettingTab(this.app, this));
 
+    // Obsidian reads a plugin's styles.css from disk and appends it to the head only
+    // after `onload` returns, so the element the CSS goes into does not exist yet on
+    // the call above — on a first install, and on every reload in place. How many ticks
+    // that file read takes is not something to guess at, so watch for the element
+    // instead of retrying on a timer.
+    if (this.styleEl === null) {
+      this.applyWhenStyleElementArrives();
+    }
+
     // Scanning is deliberately deferred off the critical path.
     this.app.workspace.onLayoutReady(() => {
       this.rescanIfStale().catch((error: unknown) => {
@@ -134,26 +131,13 @@ export default class LocalFontsPlugin extends Plugin {
   }
 
   override onunload(): void {
-    if (this.sheet !== null && supportsAdoptedStyleSheets()) {
-      // Reassign rather than mutate: other code may hold a reference to the current array.
-      const sheet = this.sheet;
-      document.adoptedStyleSheets = document.adoptedStyleSheets.filter((s) => s !== sheet);
+    // Obsidian removes the element itself on unload, so this matters only for a reload
+    // in place: restore styles.css to exactly what it shipped as, generated rules gone.
+    if (this.styleEl !== null) {
+      this.styleEl.textContent = this.baseCss;
     }
-    this.sheet = null;
-    this.clearFallbackRules();
-    this.fallbackSheet = null;
-  }
-
-  /** Removes exactly the rules this plugin inserted into `fallbackSheet`, leaving every
-   *  rule that was already in styles.css (including the marker) untouched. */
-  private clearFallbackRules(): void {
-    if (this.fallbackSheet === null) {
-      return;
-    }
-    for (let i = 0; i < this.fallbackRuleCount; i++) {
-      this.fallbackSheet.deleteRule(this.fallbackSheet.cssRules.length - 1);
-    }
-    this.fallbackRuleCount = 0;
+    this.styleEl = null;
+    this.baseCss = '';
   }
 
   async saveSettings(): Promise<void> {
@@ -181,14 +165,59 @@ export default class LocalFontsPlugin extends Plugin {
     return this.unverified;
   }
 
-  /** Regenerate and apply the stylesheet from the current cache and settings. */
+  /**
+   * Regenerate the stylesheet from the current cache and settings, and append it to
+   * this plugin's own `<style>` element — which reaches every window, main and pop-out
+   * alike (see `findPluginStyleElement`). Rewriting from `baseCss` each time makes
+   * repeated calls idempotent, so there is nothing to clean up between applies.
+   */
   applyFonts(): void {
-    const css = this.buildStylesheet();
-    if (supportsAdoptedStyleSheets()) {
-      this.applyViaAdoptedStyleSheet(css);
-    } else {
-      this.applyViaInsertRule(css);
+    this.styleEl ??= this.locateStyleElement();
+    if (this.styleEl === null) {
+      return;
     }
+    const css = this.buildStylesheet();
+    this.styleEl.textContent = css === '' ? this.baseCss : `${this.baseCss}\n\n${css}`;
+  }
+
+  /** Find the element once and remember what styles.css shipped with. */
+  private locateStyleElement(): HTMLStyleElement | null {
+    const el = findPluginStyleElement();
+    if (el === null) {
+      return null;
+    }
+    this.baseCss = el.textContent;
+    return el;
+  }
+
+  /**
+   * Re-apply as soon as Obsidian appends this plugin's styles.css to the head, and give
+   * up complaining about it after `STYLE_ELEMENT_TIMEOUT_MS`. Missing it is not fatal —
+   * a settings change or a rescan calls `applyFonts` again and would pick it up then —
+   * so this reports rather than throws, and reports once rather than on every apply.
+   */
+  private applyWhenStyleElementArrives(): void {
+    const observer = new MutationObserver(() => {
+      this.applyFonts();
+      if (this.styleEl !== null) {
+        observer.disconnect();
+      }
+    });
+    observer.observe(document.head, { childList: true });
+
+    const giveUp = window.setTimeout(() => {
+      observer.disconnect();
+      if (this.styleEl === null) {
+        console.error(
+          '[local-fonts] could not find the plugin stylesheet among document.styleSheets; fonts will not apply on this device',
+        );
+      }
+    }, STYLE_ELEMENT_TIMEOUT_MS);
+
+    this.register(() => {
+      observer.disconnect();
+      window.clearTimeout(giveUp);
+    });
   }
 
   /** Build the CSS string for the current cache, role assignments and engine. */
@@ -207,45 +236,6 @@ export default class LocalFontsPlugin extends Plugin {
       hardOverride: this.settings.hardOverride,
       resolve: (path) => this.app.vault.adapter.getResourcePath(path),
     });
-  }
-
-  /**
-   * No element is created at all, so there's nothing for `no-forbidden-elements` to
-   * catch and nothing to hunt for on repeated calls: `replaceSync` makes re-applying
-   * trivially idempotent, and re-adding an already-adopted sheet is a guarded no-op.
-   */
-  private applyViaAdoptedStyleSheet(css: string): void {
-    this.sheet ??= new CSSStyleSheet();
-    this.sheet.replaceSync(css);
-    if (!document.adoptedStyleSheets.includes(this.sheet)) {
-      document.adoptedStyleSheets = [...document.adoptedStyleSheets, this.sheet];
-    }
-  }
-
-  /**
-   * No element is created here either: this plugin's own stylesheet (loaded by
-   * Obsidian from styles.css) is located once via `findPluginStyleSheet` and reused,
-   * and each call replaces exactly the rules the previous call inserted — via
-   * `insertRule`/`deleteRule`, since a non-constructed stylesheet's `replaceSync`
-   * throws.
-   */
-  private applyViaInsertRule(css: string): void {
-    this.fallbackSheet ??= findPluginStyleSheet();
-    const sheet = this.fallbackSheet;
-    if (sheet === null) {
-      // Nothing to inject into; surfaced here rather than thrown, since a rescan or a
-      // settings change must not crash the plugin over a stylesheet that failed to load.
-      console.error(
-        '[local-fonts] could not find the plugin stylesheet among document.styleSheets; fonts will not apply on this device',
-      );
-      return;
-    }
-    this.clearFallbackRules();
-    const rules = splitCssRules(css);
-    for (const rule of rules) {
-      sheet.insertRule(rule, sheet.cssRules.length);
-    }
-    this.fallbackRuleCount = rules.length;
   }
 
   /** Rescan the folder and re-apply. Safe to call at any time; never on the startup path. */
