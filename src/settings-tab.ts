@@ -401,6 +401,16 @@ export class LocalFontsSettingTab extends PluginSettingTab {
   ): HTMLElement {
     const section = parent.createDiv({ cls: 'local-fonts-diagnostics' });
 
+    // Listed first because it outranks every other diagnostic here: when the stylesheet
+    // was never found, nothing below it took effect either, however healthy the scan
+    // results look. Without this the failure is a console line nobody reads, under a
+    // settings tab cheerfully listing every family it found.
+    if (this.plugin.stylesheetMissing()) {
+      section.createEl('p', {
+        cls: 'local-fonts-warning',
+        text: "The plugin's own stylesheet was not found in this window, so no font below is actually being applied. Restarting Obsidian usually fixes it; if it does not, please report it.",
+      });
+    }
     const unverified = this.plugin.unverifiedCache();
     if (unverified !== null) {
       section.createEl('p', { cls: 'local-fonts-warning', text: unverified });

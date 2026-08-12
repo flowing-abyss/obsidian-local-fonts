@@ -27,6 +27,17 @@ import type { FaceRecord, FontFormat } from './types.js';
  * character this font doesn't cover, splits the text run there, and shapes the pieces
  * on either side separately — the ZWJ sequence renders as N unjoined emoji instead of
  * one ligature, even though the font's own GSUB tables have the ligature.
+ *
+ * Measured with two @font-face declarations over the same file differing only in this
+ * one range entry, at 64px: every sequence tried came out one glyph wide with U+200D
+ * listed and two or three glyphs wide without it — family, couple-with-heart, rainbow
+ * flag, pirate flag, red hair, firefighter, eye-in-speech-bubble.
+ *
+ * ZWJ also drives ligature and half-form selection in Devanagari, Bengali, Tamil,
+ * Sinhala and the Perso-Arabic scripts, so claiming it for the emoji font could in
+ * principle have split those runs instead. It does not: the same measurement over
+ * conjuncts in all five scripts gave identical widths either way. The browser resolves
+ * the emoji font for U+200D only where the surrounding run is already emoji.
  */
 export const EMOJI_UNICODE_RANGE = [
   'U+203C-2121',
@@ -111,6 +122,16 @@ function stack(family: string, emoji: string | null, fallback: string): string {
  * Two element names (0-0-2) restore that, without `!important` — which would have gone
  * further than the old behaviour and started beating inline styles too. Element
  * selectors only, so this holds in pop-out windows, where the body's classes differ.
+ *
+ * `body` and not `:root`: Obsidian's own `--font-text: var(--font-text-override, ...)`
+ * chain is declared on `body` in app.css, with the string `'??'` as the placeholder. A
+ * value declared on an element beats one inherited from an ancestor whatever the
+ * specificity, so writing these to `:root` would leave that placeholder in charge and
+ * apply no font at all.
+ *
+ * What this deliberately still loses to: `!important`, any selector carrying a class or
+ * an id (`body.theme-dark { ... }` outranks it), and inline styles — the tier Obsidian's
+ * own Appearance settings write to, so a font picked there keeps winning, as before.
  */
 const ROLE_SCOPE = 'html body';
 

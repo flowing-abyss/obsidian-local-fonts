@@ -105,6 +105,8 @@ export default class LocalFontsPlugin extends Plugin {
   private unloaded = false;
   /** Whether a `MutationObserver` is already waiting for the style element. */
   private waiting = false;
+  /** Set when the wait for the style element ran out, read back by the settings tab. */
+  private missingStylesheet = false;
   /** Paths dropped by the most recent scan, surfaced by the settings tab. */
   private skipped: string[] = [];
   /** Message from the most recent failed scan, surfaced by the settings tab. */
@@ -145,7 +147,9 @@ export default class LocalFontsPlugin extends Plugin {
   override onunload(): void {
     // Obsidian removes the element itself on unload, so this matters only for a reload
     // in place: restore styles.css to exactly what it shipped as, generated rules gone.
-    if (this.styleEl !== null) {
+    // Only when the element still holds this plugin's own output, though — if styles.css
+    // was reloaded from disk since the last apply, its new text is not ours to revert.
+    if (this.styleEl !== null && this.styleEl.textContent === this.written) {
       this.styleEl.textContent = this.baseCss;
     }
     this.styleEl = null;
@@ -177,6 +181,17 @@ export default class LocalFontsPlugin extends Plugin {
    *  scan confirmed the folder. */
   unverifiedCache(): string | null {
     return this.unverified;
+  }
+
+  /**
+   * Whether the wait for this plugin's own stylesheet timed out, meaning no generated
+   * CSS is on the page and no font is applied. Surfaced by the settings tab, because
+   * this failure is otherwise completely invisible: the family list, the diagnostics
+   * cards and the role dropdowns all read the cache and look perfectly healthy while
+   * nothing at all is rendering in the chosen fonts.
+   */
+  stylesheetMissing(): boolean {
+    return this.missingStylesheet;
   }
 
   /**
@@ -222,6 +237,9 @@ export default class LocalFontsPlugin extends Plugin {
     }
     this.baseCss = el.textContent;
     this.written = el.textContent;
+    // A later apply can still find it after the wait gave up — a settings change or a
+    // rescan calls back in here — so the warning must be able to go away again.
+    this.missingStylesheet = false;
     return el;
   }
 
@@ -250,6 +268,7 @@ export default class LocalFontsPlugin extends Plugin {
     const giveUp = window.setTimeout(() => {
       observer.disconnect();
       if (this.styleEl === null) {
+        this.missingStylesheet = true;
         console.error(
           '[local-fonts] could not find the plugin stylesheet among document.styleSheets; fonts will not apply on this device',
         );

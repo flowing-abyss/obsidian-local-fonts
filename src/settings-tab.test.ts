@@ -575,6 +575,27 @@ describe('LocalFontsSettingTab', () => {
     expect(warning?.textContent).toContain('disk exploded');
   });
 
+  // Everything else on this tab reads the cache, so it keeps looking healthy while not
+  // one font is being applied. This is the only place that failure becomes visible to
+  // somebody who is never going to open the developer console.
+  it('says so when the stylesheet the fonts are written into was never found', () => {
+    vi.spyOn(plugin, 'stylesheetMissing').mockReturnValue(true);
+
+    tab.display();
+
+    const warning = tab.containerEl.querySelector('.local-fonts-diagnostics .local-fonts-warning');
+    expect(warning?.textContent).toContain('stylesheet was not found');
+  });
+
+  it('says nothing about the stylesheet when it was found, which is every normal run', () => {
+    tab.display();
+
+    const warnings = Array.from(
+      tab.containerEl.querySelectorAll('.local-fonts-diagnostics .local-fonts-warning'),
+    );
+    expect(warnings.some((el) => el.textContent.includes('stylesheet was not found'))).toBe(false);
+  });
+
   describe('weight chips', () => {
     it('shows one chip per distinct weight present', () => {
       plugin.settings.cache = {

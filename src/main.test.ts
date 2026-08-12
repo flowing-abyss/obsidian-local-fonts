@@ -298,6 +298,7 @@ describe('LocalFontsPlugin', () => {
       // Missing it at this point is the expected case — Obsidian appends styles.css
       // only after `onload` returns — so nothing is said while the wait is still on.
       expect(consoleError).not.toHaveBeenCalled();
+      expect(plugin.stylesheetMissing()).toBe(false);
 
       vi.advanceTimersByTime(30_000);
     } finally {
@@ -306,6 +307,51 @@ describe('LocalFontsPlugin', () => {
 
     expect(consoleError).toHaveBeenCalledWith(expect.stringContaining('could not find'));
     expect(consoleError).toHaveBeenCalledTimes(1);
+    // A console line is invisible to the people this happens to; the settings tab reads
+    // this back and says so where they will actually see it.
+    expect(plugin.stylesheetMissing()).toBe(true);
+
+    // And it stops saying so once a later apply does find the stylesheet.
+    document.head.append(styleEl);
+    plugin.applyFonts();
+
+    expect(plugin.stylesheetMissing()).toBe(false);
+  });
+
+  // Obsidian calls onload once per instance, but a second call with no unload between
+  // used to leave two observers and two timers waiting, turning "report once" into
+  // "report once per onload".
+  it('waits for the stylesheet only once, however many times onload runs', async () => {
+    styleEl.remove();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.useFakeTimers();
+
+    try {
+      await plugin.onload();
+      await plugin.onload();
+
+      vi.advanceTimersByTime(30_000);
+    } finally {
+      vi.useRealTimers();
+      document.head.append(styleEl);
+    }
+
+    expect(consoleError).toHaveBeenCalledTimes(1);
+  });
+
+  // Obsidian owns the text of styles.css; only this plugin's own additions are its to
+  // take back. Reverting to a stale copy would drop whatever was just loaded from disk.
+  it('leaves a styles.css reloaded since the last apply alone on unload', async () => {
+    vi.spyOn(plugin, 'loadData').mockResolvedValue({
+      roles: { text: 'Probe Sans', interface: null, monospace: null, headings: null, emoji: null },
+    });
+    await plugin.onload();
+
+    const reloaded = `${MARKER_CSS}\n.local-fonts-fresh { color: red; }`;
+    styleEl.textContent = reloaded;
+    plugin.onunload();
+
+    expect(styleEl.textContent).toBe(reloaded);
   });
 
   // Obsidian reads a plugin's styles.css from disk and appends it only after `onload`
