@@ -107,6 +107,9 @@ export default class LocalFontsPlugin extends Plugin {
   private waiting = false;
   /** Set when the wait for the style element ran out, read back by the settings tab. */
   private missingStylesheet = false;
+  /** Watches the current style element's own text; rebound whenever that element
+   *  changes, disconnected on unload. See `watchStyleElementText`. */
+  private textObserver: MutationObserver | null = null;
   /** Paths dropped by the most recent scan, surfaced by the settings tab. */
   private skipped: string[] = [];
   /** Message from the most recent failed scan, surfaced by the settings tab. */
@@ -129,9 +132,7 @@ export default class LocalFontsPlugin extends Plugin {
     // the call above — on a first install, and on every reload in place. How many ticks
     // that file read takes is not something to guess at, so watch for the element
     // instead of retrying on a timer.
-    if (this.styleEl === null) {
-      this.applyWhenStyleElementArrives();
-    }
+    this.watchStyleElement();
 
     // Scanning is deliberately deferred off the critical path.
     this.app.workspace.onLayoutReady(() => {
@@ -152,6 +153,8 @@ export default class LocalFontsPlugin extends Plugin {
     if (this.styleEl !== null && this.styleEl.textContent === this.written) {
       this.styleEl.textContent = this.baseCss;
     }
+    this.textObserver?.disconnect();
+    this.textObserver = null;
     this.styleEl = null;
     this.baseCss = '';
     this.written = '';
@@ -240,16 +243,33 @@ export default class LocalFontsPlugin extends Plugin {
     // A later apply can still find it after the wait gave up — a settings change or a
     // rescan calls back in here — so the warning must be able to go away again.
     this.missingStylesheet = false;
+    this.watchStyleElementText(el);
     return el;
   }
 
   /**
-   * Re-apply as soon as Obsidian appends this plugin's styles.css to the head, and give
-   * up complaining about it after `STYLE_ELEMENT_TIMEOUT_MS`. Missing it is not fatal —
-   * a settings change or a rescan calls `applyFonts` again and would pick it up then —
-   * so this reports rather than throws, and reports once rather than on every apply.
+   * Watch the head for this plugin's styles.css — first for it to arrive, and then for
+   * the rest of the session in case it is taken away again.
+   *
+   * Obsidian does not necessarily register that element once and leave it alone. On
+   * Android the release matrix caught the element holding nothing but the static file
+   * after the plugin had already written to it, so something re-registers it there.
+   * Whether that is a fresh element replacing ours or the same element having its text
+   * reloaded was never pinned down, so both are handled: this watcher covers the
+   * element being swapped, `watchStyleElementText` covers the text being replaced.
+   * Without them the fonts simply vanish until something else happens to call
+   * `applyFonts` — a settings change, or a rescan that may never come.
+   *
+   * This costs nothing while nothing changes. `MutationObserver` is not a poll: the
+   * callback runs only on an actual mutation of the head's child list, and all it does
+   * then is read one boolean off a reference it already holds. The expensive part —
+   * finding the element and rebuilding the CSS — is behind that check.
+   *
+   * Never finding the element at all is reported once, after `STYLE_ELEMENT_TIMEOUT_MS`,
+   * and reported rather than thrown: a rescan or a settings change must not crash over
+   * it, and the settings tab reads `stylesheetMissing` back to say so where it shows.
    */
-  private applyWhenStyleElementArrives(): void {
+  private watchStyleElement(): void {
     // A second `onload` without an unload in between would otherwise leave two of these
     // running, and the "reports once" above would become "reports once per onload".
     if (this.waiting) {
@@ -257,16 +277,13 @@ export default class LocalFontsPlugin extends Plugin {
     }
     this.waiting = true;
     const observer = new MutationObserver(() => {
-      this.applyFonts();
-      if (this.styleEl !== null) {
-        observer.disconnect();
-        window.clearTimeout(giveUp);
+      if (this.styleEl?.isConnected !== true) {
+        this.applyFonts();
       }
     });
     observer.observe(document.head, { childList: true });
 
     const giveUp = window.setTimeout(() => {
-      observer.disconnect();
       if (this.styleEl === null) {
         this.missingStylesheet = true;
         console.error(
@@ -280,6 +297,29 @@ export default class LocalFontsPlugin extends Plugin {
       window.clearTimeout(giveUp);
       this.waiting = false;
     });
+  }
+
+  /**
+   * Re-apply if the style element's own text stops being what this plugin wrote — the
+   * other half of the recovery described on `watchStyleElement`, for the case where the
+   * element survives but styles.css is reloaded into it.
+   *
+   * Cannot loop on its own output: `applyFonts` ends by assigning `written`, so the
+   * mutation it causes finds them equal and does nothing. Callbacks are delivered as
+   * microtasks, never re-entrantly during the write itself.
+   *
+   * Bound to whichever element is current, so it follows a replacement rather than
+   * staying attached to a detached node.
+   */
+  private watchStyleElementText(el: HTMLStyleElement): void {
+    this.textObserver?.disconnect();
+    const observer = new MutationObserver(() => {
+      if (this.styleEl !== null && this.styleEl.textContent !== this.written) {
+        this.applyFonts();
+      }
+    });
+    observer.observe(el, { childList: true, characterData: true, subtree: true });
+    this.textObserver = observer;
   }
 
   /** Build the CSS string for the current cache, role assignments and engine. */

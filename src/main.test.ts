@@ -234,6 +234,49 @@ describe('LocalFontsPlugin', () => {
     expect(styleEl.textContent).toBe(afterFirstLoad);
   });
 
+  // The Android leg of the release matrix caught the element holding nothing but the
+  // static file after the plugin had already written to it, so on some platform
+  // Obsidian re-registers this element after the plugin is done with it. Recovery has
+  // to be automatic: nothing else calls applyFonts until the user changes a setting or
+  // a rescan happens to run, and the fonts are simply gone in the meantime.
+  it('puts its CSS back when the whole style element is swapped out from under it', async () => {
+    vi.spyOn(plugin, 'loadData').mockResolvedValue({
+      roles: { text: 'Probe Sans', interface: null, monospace: null, headings: null, emoji: null },
+    });
+    await plugin.onload();
+    expect(styleEl.textContent).toContain('Probe Sans');
+
+    styleEl.remove();
+    const replacement = installPluginStyles();
+    try {
+      // Nothing calls applyFonts here — the watcher has to notice on its own.
+      await vi.waitFor(() => {
+        expect(replacement.textContent).toContain('Probe Sans');
+      });
+    } finally {
+      replacement.remove();
+      document.head.append(styleEl);
+    }
+  });
+
+  it('puts its CSS back when styles.css is reloaded into the same element', async () => {
+    vi.spyOn(plugin, 'loadData').mockResolvedValue({
+      roles: { text: 'Probe Sans', interface: null, monospace: null, headings: null, emoji: null },
+    });
+    await plugin.onload();
+
+    // Obsidian reloading the file over the top, generated CSS and all.
+    styleEl.textContent = `${MARKER_CSS}\n.local-fonts-reloaded { color: red; }`;
+
+    await vi.waitFor(() => {
+      expect(styleEl.textContent).toContain('Probe Sans');
+    });
+    // ...keeping what was just loaded, rather than reverting to the old file.
+    expect(styleEl.textContent).toContain('.local-fonts-reloaded');
+    // ...and exactly once, not appended afresh on every observed mutation.
+    expect(styleEl.textContent.match(/--font-text-override/g)).toHaveLength(1);
+  });
+
   // Obsidian rewrites the element in place when styles.css changes on disk. Holding the
   // text captured at load time as the base forever would paste the old file back over
   // the new one on the next settings change, silently undoing the reload.
