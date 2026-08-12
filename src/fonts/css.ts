@@ -20,11 +20,19 @@ import type { FaceRecord, FontFormat } from './types.js';
  * U+2122 TRADE MARK SIGN is the one carve-out. In prose it is a trademark symbol
  * essentially always, its emoji spelling is vanishingly rare, and rendering it from a
  * colour emoji font in running text is plainly wrong.
+ *
+ * U+200D ZERO WIDTH JOINER must be listed too, even though it draws nothing on its own.
+ * ZWJ is what fuses a run of base emoji into one glyph (families, professions, some
+ * flags). If it falls outside this font's declared range, the browser treats it as a
+ * character this font doesn't cover, splits the text run there, and shapes the pieces
+ * on either side separately — the ZWJ sequence renders as N unjoined emoji instead of
+ * one ligature, even though the font's own GSUB tables have the ligature.
  */
 export const EMOJI_UNICODE_RANGE = [
   'U+203C-2121',
   'U+2123-3299',
   'U+FE0F',
+  'U+200D',
   'U+20E3',
   'U+1F000-1F9FF',
   'U+1FA70-1FAFF',

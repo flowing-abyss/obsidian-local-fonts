@@ -152,6 +152,17 @@ describe('buildCss', () => {
     expect(css).toContain('unicode-range:');
   });
 
+  it('covers the zero width joiner, without which ZWJ sequences render as separate emoji', () => {
+    const css = buildCss({
+      faces: [face({ family: 'Probe Emoji' })],
+      roles: { ...DEFAULT_SETTINGS.roles, emoji: 'Probe Emoji' },
+      hardOverride: false,
+      resolve,
+    });
+
+    expect(css).toMatch(/unicode-range:[^;]*U\+200D/);
+  });
+
   it('emits no !important rules unless hard override is on', () => {
     const css = buildCss({
       faces: [face({})],
