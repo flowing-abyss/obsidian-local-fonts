@@ -200,8 +200,19 @@ export default class LocalFontsPlugin extends Plugin {
   /**
    * Regenerate the stylesheet from the current cache and settings, and append it to
    * this plugin's own `<style>` element — which reaches every window, main and pop-out
-   * alike (see `findPluginStyleElement`). Rewriting from `baseCss` each time makes
-   * repeated calls idempotent, so there is nothing to clean up between applies.
+   * alike (see `findPluginStyleElement`). Rewriting from `baseCss` each time means
+   * repeated calls replace rather than accumulate, so there is nothing to clean up
+   * between applies.
+   *
+   * Not byte-for-byte idempotent, though, and nothing here should assume it is.
+   * `getResourcePath` appends the file's mtime as a cache-busting query — except for a
+   * path its adapter has no index entry for, where it falls back to `Date.now()`, and
+   * a hidden fonts folder is exactly such a path (measured: a face under `.fonts` gets
+   * a new query on every call, a note in a visible folder does not). Two consecutive
+   * applies can therefore produce different text for an unchanged folder. Nothing here
+   * breaks because of it — `written` records the string actually written, so the
+   * watchers compare against that rather than against a rebuild — but it does mean an
+   * apply re-fetches the faces instead of reusing what the browser already had.
    */
   applyFonts(): void {
     // A rescan started before the plugin was disabled can resolve after it, and putting

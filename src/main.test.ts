@@ -239,24 +239,61 @@ describe('LocalFontsPlugin', () => {
   // Obsidian re-registers this element after the plugin is done with it. Recovery has
   // to be automatic: nothing else calls applyFonts until the user changes a setting or
   // a rescan happens to run, and the fonts are simply gone in the meantime.
-  it('puts its CSS back when the whole style element is swapped out from under it', async () => {
+  it('puts its CSS back every time the style element is swapped, not just the first time', async () => {
     vi.spyOn(plugin, 'loadData').mockResolvedValue({
       roles: { text: 'Probe Sans', interface: null, monospace: null, headings: null, emoji: null },
     });
     await plugin.onload();
     expect(styleEl.textContent).toContain('Probe Sans');
 
-    styleEl.remove();
-    const replacement = installPluginStyles();
+    const swapped: HTMLStyleElement[] = [];
     try {
-      // Nothing calls applyFonts here — the watcher has to notice on its own.
-      await vi.waitFor(() => {
-        expect(replacement.textContent).toContain('Probe Sans');
-      });
+      // Twice, with the first recovery awaited in between. One swap alone would not
+      // pin this down: a watcher that disconnects the moment it first finds an element
+      // still handles a single event, so a single-swap test passes against the very
+      // behaviour this is here to prevent. The second swap is the one that only a
+      // watcher still running after the first can see.
+      for (const attempt of [0, 1]) {
+        const current = swapped[attempt - 1] ?? styleEl;
+        current.remove();
+        const replacement = installPluginStyles();
+        swapped.push(replacement);
+
+        // Nothing calls applyFonts here — the watcher has to notice on its own.
+        await vi.waitFor(() => {
+          expect(replacement.textContent).toContain('Probe Sans');
+        });
+      }
     } finally {
-      replacement.remove();
+      for (const el of swapped) {
+        el.remove();
+      }
       document.head.append(styleEl);
     }
+  });
+
+  // The watchers are torn down through `this.register`, which only runs on a real
+  // `Component.unload()` — calling `onunload()` directly, as most tests here do, skips
+  // it entirely. Without this, a watcher left running past unload would go unnoticed,
+  // and every disable/enable cycle would leave another one behind.
+  it('stops watching once the plugin is properly unloaded', async () => {
+    vi.spyOn(plugin, 'loadData').mockResolvedValue({
+      roles: { text: 'Probe Sans', interface: null, monospace: null, headings: null, emoji: null },
+    });
+    plugin.load();
+    await vi.waitFor(() => {
+      expect(styleEl.textContent).toContain('Probe Sans');
+    });
+
+    // Asserted on the teardown itself, not on "nothing happens afterwards": the
+    // `unloaded` guard in applyFonts already makes nothing happen, so a behavioural
+    // check here would pass with both watchers still attached to the document.
+    const disconnect = vi.spyOn(MutationObserver.prototype, 'disconnect');
+
+    plugin.unload();
+
+    // Both of them: the one on the head, and the one on the element's own text.
+    expect(disconnect.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
   it('puts its CSS back when styles.css is reloaded into the same element', async () => {
