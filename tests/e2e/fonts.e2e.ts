@@ -42,7 +42,18 @@ describe('local fonts apply in a real Obsidian', () => {
   // rather than by switching WebDriver window handles: the assertion is about CSS
   // reaching a second document, and reading it directly keeps the test from depending
   // on how the driver enumerates Obsidian's windows.
-  it('reaches a pop-out window, which only mirrored element text ever does', async () => {
+  it('reaches a pop-out window, which only mirrored element text ever does', async function () {
+    // Mobile has no second window to reach: `openPopoutLeaf` throws "This feature is
+    // only available in the desktop app" there, which is how the Android leg of this
+    // matrix failed while the desktop legs all passed. Skipped rather than quietly
+    // returned from, so the report says this ran nowhere rather than passing hollowly.
+    const isDesktop = await browser.executeObsidian(
+      ({ obsidian }) => obsidian.Platform.isDesktopApp,
+    );
+    if (!isDesktop) {
+      this.skip();
+    }
+
     const result = await browser.executeObsidian(async ({ app }) => {
       const workspace = app.workspace as unknown as {
         openPopoutLeaf: () => { openFile: (file: unknown) => Promise<void> };
