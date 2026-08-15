@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFixture } from '../../tests/fixtures.js';
+import { buildWoff2WithFvar, readFixture } from '../../tests/fixtures.js';
 import { parseSfnt } from './sfnt.js';
 import { decodeWoff2, readWoff2TableTags, woff2ColorFormats } from './woff2.js';
 
@@ -111,5 +111,39 @@ describe('decodeWoff2', () => {
 
   it('returns null rather than throwing on a buffer it cannot decode', async () => {
     await expect(decodeWoff2(new ArrayBuffer(64))).resolves.toBeNull();
+  });
+
+  /**
+   * `fvar` surviving the container is what makes variable-font support mean anything:
+   * variable fonts are distributed as woff2 far more often than as ttf, and if the axis
+   * table were lost here every one of them would silently fall back to the single weight
+   * in `OS/2` — the exact behaviour variable support exists to replace, failing in the
+   * common case while the ttf case looked fine.
+   *
+   * The fixtures are all static, so the font is built here rather than read. WOFF2
+   * defines transforms only for `glyf`/`loca`/`hmtx`, so `fvar` is stored as plain bytes
+   * inside the brotli stream, which is what makes a hand-built container a faithful test
+   * of the same path a real file takes.
+   */
+  it('carries fvar through the container, so a variable woff2 keeps its axes', async () => {
+    // The "no decoder shipped" question is settled against a fixture that has nothing to
+    // do with fvar, and only then is this font decoded. Asking it of this font instead
+    // makes the test unfalsifiable: it holds only an fvar table, so dropping fvar from
+    // reassembly leaves nothing to reassemble, `decodeWoff2` answers null, and a null
+    // check written as an escape hatch would wave through the exact regression this
+    // exists to catch.
+    const decoderAvailable =
+      (await decodeWoff2(readFixture('probe-sans/probe-sans-400.woff2'))) !== null;
+    if (!decoderAvailable) {
+      expect(decoderAvailable).toBe(false);
+      return;
+    }
+
+    const decoded = await decodeWoff2(buildWoff2WithFvar());
+
+    expect(decoded).not.toBeNull();
+    expect(parseSfnt(decoded ?? new ArrayBuffer(0)).axes).toStrictEqual([
+      { tag: 'wght', min: 100, default: 400, max: 900 },
+    ]);
   });
 });
