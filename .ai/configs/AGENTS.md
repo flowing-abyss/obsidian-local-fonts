@@ -11,6 +11,8 @@ Loads font files from a folder inside the vault (`fonts` by default, may be hidd
 - **Match the marker's value, never just its presence.** `all: unset` resets custom properties too, so in Chromium a rule using it answers `getPropertyValue` with something other than `''` for any custom property — a presence check picked Excalidraw's stylesheet in a real vault and appended this plugin's CSS there.
 - **Chromium has never shipped OT-SVG; WebKit has.** That asymmetry is the whole reason per-platform face selection exists. The capability matrix lives in `src/fonts/platform.ts` — it is the one place to correct when a real device contradicts it.
 - Fonts are served via `adapter.getResourcePath()`, never base64. That is the performance premise: the browser lazily fetches only the faces it uses.
+- **On Obsidian 1.13 a settings tab is shown through `renderTab()`, and neither `display()` nor `getSettingDefinitions()` runs again after the first render.** Read out of the running 1.13.7 app: `renderTab() { this.settingItems.length > 0 ? renderDeclaratively(this) : this.display() }` and `update() { this.settingItems = this.getSettingDefinitions(); ... }`. So anything that must happen every time the user opens the tab belongs in `renderTab` (overridden via a prototype lookup, since it is absent from the published typings); anything that must re-render after data changed goes through `update()`. Verified live: `update()` does rebuild the declarative rows _and_ the diagnostics section.
+- **`tab.containerEl` is not what 1.13 displays.** It holds the legacy `display()` DOM and stays attached, so reading it in a probe reports whatever was rendered last, not what the user sees. Query `app.setting.tabContentContainer` instead.
 
 ## Manual UI verification
 

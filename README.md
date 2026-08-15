@@ -18,6 +18,10 @@ format all come from the font file itself, so filenames are irrelevant in normal
 Fonts load through resource URLs instead of base64, so the browser fetches only the
 weights a note actually displays. A folder holding forty faces typically loads a dozen.
 
+Variable fonts stay variable. A file carrying a weight axis is declared across its whole
+range, so every weight your theme asks for is drawn from the real design. A single value
+would leave the browser faking bold from one instance, which smears the outlines.
+
 The default folder is `fonts` in your vault root. Any vault-relative path works, hidden
 ones like `.fonts` included, which keeps a font collection out of your note tree.
 
@@ -52,7 +56,8 @@ file, so a flat folder works just as well as this one.
 
 Then open Settings → Local Fonts. Families appear in the dropdowns after the folder is
 scanned. Scanning runs in the background, and only files that changed since last time are
-read again.
+read again. Opening these settings checks the folder too, so a font you just dropped in
+shows up without restarting Obsidian.
 
 Filenames matter in one situation. When a `.woff2` cannot be decoded, the plugin looks
 for a file with the same name and a different extension and reads metadata from that
@@ -86,6 +91,13 @@ the family itself, and it loads only once you expand the card.
 
 The **Check** button measures what actually rendered on the device you are using. Reach
 for it after changing fonts, especially on a phone.
+
+The **Rescan** button re-reads every file in the folder from scratch. Change detection
+normally compares each file's size and modification time, which is quick enough to run
+whenever these settings open. One case slips past it, a font replaced in place by one of
+exactly the same size and modification time, which restoring from a backup or copying
+with timestamps preserved can produce. Press Rescan when a font changed on disk and the
+card still describes the old one.
 
 ## Emoji formats
 
