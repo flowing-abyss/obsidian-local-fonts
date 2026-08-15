@@ -610,6 +610,150 @@ describe('LocalFontsPlugin', () => {
     expect(plugin.families().get('Probe Sans')).toHaveLength(1);
   });
 
+  /**
+   * The stamp comparison is what keeps a rescan off the startup path, and it pays for
+   * that with one blind spot: a file replaced in place whose replacement matches both
+   * the old size and the old mtime is indistinguishable from the original. These two
+   * tests pin down both halves of the deal — that the cheap check really does miss it,
+   * and that a forced rescan really is the way out.
+   */
+  describe('a file replaced in place under an unchanged size and mtime', () => {
+    /** Freeze every file's stamp, so only the bytes behind the path change. */
+    function freezeStamps(): void {
+      vi.spyOn(plugin.app.vault.adapter, 'stat').mockResolvedValue({
+        type: 'file',
+        ctime: 1,
+        mtime: 1,
+        size: 1,
+      });
+    }
+
+    it('is not detected by the cheap staleness check', async () => {
+      await plugin.app.vault.adapter.writeBinary(
+        'fonts/probe.ttf',
+        readFixture('probe-sans/probe-sans-400.ttf'),
+      );
+      await plugin.onload();
+      freezeStamps();
+      await plugin.rescan();
+      expect(plugin.settings.cache?.faces[0]?.weight).toBe(400);
+
+      await plugin.app.vault.adapter.writeBinary(
+        'fonts/probe.ttf',
+        readFixture('probe-sans/probe-sans-700italic.ttf'),
+      );
+
+      expect(await plugin.rescanIfStale()).toBe(false);
+      expect(plugin.settings.cache?.faces[0]?.weight).toBe(400);
+    });
+
+    it('is picked up by a forced rescan, which re-reads every file', async () => {
+      await plugin.app.vault.adapter.writeBinary(
+        'fonts/probe.ttf',
+        readFixture('probe-sans/probe-sans-400.ttf'),
+      );
+      await plugin.onload();
+      freezeStamps();
+      await plugin.rescan();
+      await plugin.app.vault.adapter.writeBinary(
+        'fonts/probe.ttf',
+        readFixture('probe-sans/probe-sans-700italic.ttf'),
+      );
+
+      await plugin.rescan({ force: true });
+
+      expect(plugin.settings.cache?.faces[0]?.weight).toBe(700);
+      expect(plugin.settings.cache?.faces[0]?.italic).toBe(true);
+    });
+  });
+
+  /**
+   * There are now three callers that can start a scan — the deferred startup scan, the
+   * settings tab opening, and the Rescan button — and nothing about the UI stops two of
+   * them overlapping. Two scans running at once do the same disk work twice and then
+   * both write data.json, where the loser is whichever finished first, regardless of
+   * which one read the newer folder. Serialising them in the plugin fixes it for every
+   * caller at once, rather than asking each caller to hold its own flag.
+   */
+  describe('two scans asked for at once', () => {
+    it('runs them one after the other rather than in parallel', async () => {
+      await plugin.app.vault.adapter.writeBinary(
+        'fonts/probe-sans-400.ttf',
+        readFixture('probe-sans/probe-sans-400.ttf'),
+      );
+      await plugin.onload();
+      const order: string[] = [];
+      const list = plugin.app.vault.adapter.list.bind(plugin.app.vault.adapter);
+      vi.spyOn(plugin.app.vault.adapter, 'list').mockImplementation(async (path: string) => {
+        order.push('start');
+        const result = await list(path);
+        order.push('end');
+        return result;
+      });
+
+      await Promise.all([plugin.rescan(), plugin.rescan({ force: true })]);
+
+      // Interleaved walks would read start,start,end,end.
+      expect(order).toStrictEqual(['start', 'end', 'start', 'end']);
+    });
+
+    it('still reports a failure from one without stalling the other', async () => {
+      await plugin.app.vault.adapter.writeBinary(
+        'fonts/probe-sans-400.ttf',
+        readFixture('probe-sans/probe-sans-400.ttf'),
+      );
+      await plugin.onload();
+      vi.spyOn(plugin, 'saveData')
+        .mockRejectedValueOnce(new Error('disk exploded'))
+        .mockResolvedValue();
+
+      const first = plugin.rescan();
+      const second = plugin.rescan();
+
+      await expect(first).rejects.toThrow('disk exploded');
+      await expect(second).resolves.toBeUndefined();
+    });
+  });
+
+  it('records a failure from a scan the user asked for, the same as one from startup', async () => {
+    await plugin.app.vault.adapter.writeBinary(
+      'fonts/probe-sans-400.ttf',
+      readFixture('probe-sans/probe-sans-400.ttf'),
+    );
+    await plugin.onload();
+    vi.spyOn(plugin, 'saveData').mockRejectedValue(new Error('disk exploded'));
+
+    await expect(plugin.rescan({ force: true })).rejects.toThrow('disk exploded');
+
+    expect(plugin.lastScanFailure()).toBe('disk exploded');
+  });
+
+  it('does not write settings from a scan that outlived the plugin being disabled', async () => {
+    await plugin.app.vault.adapter.writeBinary(
+      'fonts/probe-sans-400.ttf',
+      readFixture('probe-sans/probe-sans-400.ttf'),
+    );
+    await plugin.onload();
+    const saveData = vi.spyOn(plugin, 'saveData').mockResolvedValue();
+
+    const scan = plugin.rescan();
+    plugin.onunload();
+    await scan;
+
+    expect(saveData).not.toHaveBeenCalled();
+  });
+
+  it('reports back whether a stale-check actually rebuilt the cache, so a caller can re-render', async () => {
+    await plugin.app.vault.adapter.writeBinary(
+      'fonts/probe-sans-400.ttf',
+      readFixture('probe-sans/probe-sans-400.ttf'),
+    );
+    await plugin.onload();
+
+    expect(await plugin.rescanIfStale()).toBe(true);
+    expect(await plugin.rescanIfStale()).toBe(false);
+  });
+
   it('rescans automatically once the workspace layout is ready, when the cache is stale', async () => {
     await plugin.app.vault.adapter.writeBinary(
       'fonts/probe-sans-400.ttf',
@@ -687,7 +831,10 @@ describe('LocalFontsPlugin', () => {
       readFixture('probe-sans/probe-sans-400.ttf'),
     );
     await plugin.onload();
-    vi.spyOn(plugin, 'rescan').mockRejectedValue(new Error('disk exploded'));
+    // Failed from inside the scan rather than by stubbing `rescan` itself: the deferred
+    // path calls the scan directly, so that it is already queued once, and a stub on the
+    // public method would no longer be on the road it takes.
+    vi.spyOn(plugin, 'saveData').mockRejectedValue(new Error('disk exploded'));
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
     const workspace = plugin.app.workspace as unknown as { setLayoutReady__: () => void };
