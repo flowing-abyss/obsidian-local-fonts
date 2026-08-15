@@ -45,6 +45,30 @@ describe('LocalFontsSettingTab', () => {
     tab = new LocalFontsSettingTab(app.asOriginalType__(), plugin);
   });
 
+  /**
+   * Take the tab down the pre-1.13 `display()` re-render path. The mock's base class
+   * always carries an `update()` method, unlike real Obsidian before 1.13, and its
+   * `update()` does nothing — so a re-render routed through it is invisible to a test
+   * that reads the rendered DOM or counts what the render did.
+   */
+  function withoutUpdateApi(): void {
+    (tab as unknown as { update: (() => void) | undefined }).update = undefined;
+  }
+
+  /**
+   * One full turn of the macrotask queue, which drains every microtask queued before it.
+   * The refresh a render kicks off is deliberately not awaited by the render, so a test
+   * that wants to see its effect has to let the whole promise chain — the scan, its
+   * `.then`, the re-render inside it and the `.finally` that clears the in-flight flag —
+   * run to completion first. `vi.waitFor` is not a substitute: it can resolve while that
+   * flag is still held, which silently turns off the very guard a test is measuring.
+   */
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => {
+      window.setTimeout(resolve, 0);
+    });
+  }
+
   afterEach(() => {
     Platform.isIosApp = false;
     Platform.isAndroidApp = false;
@@ -1311,6 +1335,11 @@ describe('LocalFontsSettingTab', () => {
 
     it('commits and rescans once, on blur, rather than on every keystroke', async () => {
       const rescan = vi.spyOn(plugin, 'rescan').mockResolvedValue();
+      // Opening the tab checks the folder on its own now. That check reaches the scan
+      // without going through `rescan`, so it does not currently reach this spy — but
+      // that is an implementation detail of one call, and this test is about the blur,
+      // so the tab's own check is stubbed out rather than left to stay invisible by luck.
+      vi.spyOn(plugin, 'rescanIfStale').mockResolvedValue(false);
       tab.display();
 
       const input = tab.containerEl.querySelector('input') as HTMLInputElement;
@@ -1325,6 +1354,28 @@ describe('LocalFontsSettingTab', () => {
         expect(rescan).toHaveBeenCalledTimes(1);
       });
       expect(plugin.settings.folder).toBe('.fonts2');
+    });
+
+    it('shows a folder change that failed to scan, the same as any other failed scan', async () => {
+      withoutUpdateApi();
+      vi.spyOn(plugin, 'rescanIfStale').mockResolvedValue(false);
+      vi.spyOn(plugin, 'saveSettings').mockResolvedValue();
+      let failure: string | null = null;
+      vi.spyOn(plugin, 'lastScanFailure').mockImplementation(() => failure);
+      vi.spyOn(plugin, 'rescan').mockImplementation(async () => {
+        await Promise.resolve();
+        failure = 'disk exploded';
+        throw new Error(failure);
+      });
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      tab.display();
+
+      const input = tab.containerEl.querySelector('input') as HTMLInputElement;
+      input.value = '.fonts-elsewhere';
+      input.dispatchEvent(new FocusEvent('blur'));
+      await settle();
+
+      expect(tab.containerEl.textContent).toContain('Last scan failed: disk exploded');
     });
 
     it('does not rescan on blur when the folder was not actually changed', async () => {
@@ -1693,6 +1744,295 @@ describe('LocalFontsSettingTab', () => {
       expect(setting.settingEl.classList.contains('setting-item-heading')).toBe(true);
       const card = setting.settingEl.querySelector('.local-fonts-family');
       expect(card?.querySelector('summary')?.textContent).toBe('Probe Sans');
+    });
+  });
+
+  /**
+   * Opening the settings tab is the moment a user is most likely to have just dropped a
+   * font into the folder, and until this the list they were looking at came straight
+   * from a cache last refreshed at startup — so a new font only appeared after
+   * restarting Obsidian.
+   */
+  describe('picking up folder changes when the tab is opened', () => {
+    function cacheOneFamily(family: string): void {
+      plugin.settings.cache = {
+        version: 2,
+        folder: '.fonts',
+        faces: [
+          {
+            path: `.fonts/${family}-400.woff2`,
+            format: 'woff2',
+            size: 1,
+            mtime: 1,
+            family,
+            weight: 400,
+            italic: false,
+            colorFormats: [],
+            scripts: [],
+            axes: [],
+            license: null,
+            source: 'name-table',
+          },
+        ],
+      };
+    }
+
+    it('re-renders with the newly found family when the folder had changed', async () => {
+      withoutUpdateApi();
+      cacheOneFamily('Old Family');
+      vi.spyOn(plugin, 'rescanIfStale').mockImplementation(async () => {
+        // Deferred past the synchronous part of display(), the way a real scan is: the
+        // point of the assertion below is that the cached list is drawn straight away
+        // rather than waiting on disk.
+        await Promise.resolve();
+        cacheOneFamily('New Family');
+        return true;
+      });
+
+      tab.display();
+      expect(tab.containerEl.textContent).toContain('Old Family');
+      await settle();
+
+      expect(tab.containerEl.textContent).toContain('New Family');
+      expect(tab.containerEl.textContent).not.toContain('Old Family');
+    });
+
+    it('leaves the rendered tab alone when the folder still matches the cache', async () => {
+      withoutUpdateApi();
+      cacheOneFamily('Old Family');
+      vi.spyOn(plugin, 'rescanIfStale').mockResolvedValue(false);
+
+      tab.display();
+      const marker = tab.containerEl.createDiv({ cls: 'survives-only-without-a-rerender' });
+      await settle();
+
+      expect(tab.containerEl.contains(marker)).toBe(true);
+    });
+
+    /**
+     * The hook that actually matters on Obsidian 1.13. Verified against 1.13.7: the base
+     * class renders a shown tab through `renderTab()`, which redraws from a cached
+     * `settingItems` array and calls neither `display()` nor `getSettingDefinitions()`
+     * again — so without this the folder was only ever read on the first render after a
+     * plugin load, which is precisely the "restart Obsidian to see a new font" symptom.
+     */
+    describe('renderTab, the per-open hook on Obsidian 1.13+', () => {
+      it('checks the folder every time the tab is shown', async () => {
+        const refresh = vi.spyOn(plugin, 'rescanIfStale').mockResolvedValue(false);
+
+        tab.renderTab();
+        await settle();
+        tab.renderTab();
+        await settle();
+
+        expect(refresh).toHaveBeenCalledTimes(2);
+      });
+
+      it('still hands the render itself to the base class', () => {
+        const base = Object.getPrototypeOf(
+          Object.getPrototypeOf(LocalFontsSettingTab.prototype),
+        ) as Record<string, unknown>;
+        vi.spyOn(plugin, 'rescanIfStale').mockResolvedValue(false);
+        const inherited = vi.fn().mockReturnValue('rendered');
+        base['renderTab'] = inherited;
+
+        const result = tab.renderTab('an argument the base class expects');
+
+        expect(inherited).toHaveBeenCalledWith('an argument the base class expects');
+        expect(result).toBe('rendered');
+        delete base['renderTab'];
+      });
+
+      it('does not throw on a version whose base class has no renderTab at all', () => {
+        vi.spyOn(plugin, 'rescanIfStale').mockResolvedValue(false);
+
+        expect(() => tab.renderTab()).not.toThrow();
+      });
+    });
+
+    it('re-renders through update() rather than display() on Obsidian 1.13+', async () => {
+      cacheOneFamily('Old Family');
+      vi.spyOn(plugin, 'rescanIfStale').mockResolvedValue(true);
+      const update = vi.fn();
+      (tab as unknown as { update: () => void }).update = update;
+
+      tab.getSettingDefinitions();
+      await settle();
+
+      expect(update).toHaveBeenCalledTimes(1);
+    });
+
+    /**
+     * The re-render re-reads the definitions, which kicks the refresh off again. Without
+     * a guard held across the re-render that recurses until the folder happens to settle,
+     * doing a full stat sweep of the folder on every lap.
+     */
+    it('does not kick off a second refresh from the re-render it triggered', async () => {
+      withoutUpdateApi();
+      cacheOneFamily('Old Family');
+      const refresh = vi.spyOn(plugin, 'rescanIfStale').mockResolvedValue(true);
+
+      tab.display();
+      await settle();
+
+      expect(refresh).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not kick one off from the 1.13+ re-render either, which re-reads the definitions', async () => {
+      cacheOneFamily('Old Family');
+      const refresh = vi.spyOn(plugin, 'rescanIfStale').mockResolvedValue(true);
+      // What Obsidian 1.13's own `update()` does: re-read the declarative definitions and
+      // redraw from them. Reading them is one of the two places a refresh starts.
+      (tab as unknown as { update: () => void }).update = (): void => {
+        tab.getSettingDefinitions();
+      };
+
+      tab.getSettingDefinitions();
+      await settle();
+
+      expect(refresh).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows a failed refresh in the tab, not only in the console', async () => {
+      withoutUpdateApi();
+      cacheOneFamily('Old Family');
+      // The failure has to arrive *after* the first render, the way a real one does, or
+      // the warning would already be on screen and the re-render would prove nothing.
+      let failure: string | null = null;
+      vi.spyOn(plugin, 'lastScanFailure').mockImplementation(() => failure);
+      vi.spyOn(plugin, 'rescanIfStale').mockImplementation(async () => {
+        await Promise.resolve();
+        failure = 'disk exploded';
+        throw new Error(failure);
+      });
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      tab.display();
+      expect(tab.containerEl.textContent).not.toContain('Last scan failed');
+      await settle();
+
+      expect(tab.containerEl.textContent).toContain('Last scan failed: disk exploded');
+      expect(consoleError).toHaveBeenCalled();
+    });
+  });
+
+  describe('the rescan button', () => {
+    function rescanButton(): HTMLButtonElement {
+      const buttons = Array.from(
+        tab.containerEl.querySelectorAll<HTMLButtonElement>('button'),
+        (button) => button,
+      );
+      const found = buttons.find((candidate) => candidate.textContent === 'Rescan');
+      if (found === undefined) {
+        const labels = buttons.map((button) => button.textContent).join(', ');
+        throw new Error(`no Rescan button among [${labels}]`);
+      }
+      return found;
+    }
+
+    it('is offered even when the folder looks empty, which is exactly when it is needed', () => {
+      vi.spyOn(plugin, 'rescanIfStale').mockResolvedValue(false);
+      plugin.settings.cache = { version: 2, folder: '.fonts', faces: [] };
+
+      tab.display();
+
+      expect(() => rescanButton()).not.toThrow();
+    });
+
+    it('forces a full re-read, which the automatic check cannot be made to do', async () => {
+      vi.spyOn(plugin, 'rescanIfStale').mockResolvedValue(false);
+      const rescan = vi.spyOn(plugin, 'rescan').mockResolvedValue();
+      tab.display();
+
+      rescanButton().click();
+
+      await vi.waitFor(() => {
+        expect(rescan).toHaveBeenCalledWith({ force: true });
+      });
+    });
+
+    it('ignores a second click while the first rescan is still running', async () => {
+      vi.spyOn(plugin, 'rescanIfStale').mockResolvedValue(false);
+      const rescan = vi
+        .spyOn(plugin, 'rescan')
+        .mockImplementation(() => new Promise<void>(() => undefined));
+      tab.display();
+
+      rescanButton().click();
+      rescanButton().click();
+
+      expect(rescan).toHaveBeenCalledTimes(1);
+    });
+
+    /**
+     * The re-render that shows the rescan's result must not go back to disk to ask
+     * whether that same rescan is already out of date. Same for the re-render after a
+     * folder change: both already know the cache is current.
+     */
+    /**
+     * The re-render runs from inside a `.catch()` on a chain nothing awaits. If it threw
+     * there, the chain would reject with no consumer and the failure would surface as an
+     * unhandled rejection instead of anything the user or a bug report could see —
+     * losing both the original scan failure and the render one.
+     */
+    it('survives a re-render that itself throws while reporting a failure', async () => {
+      withoutUpdateApi();
+      vi.spyOn(plugin, 'rescanIfStale').mockResolvedValue(false);
+      vi.spyOn(plugin, 'rescan').mockRejectedValue(new Error('disk exploded'));
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      tab.display();
+      vi.spyOn(tab, 'display').mockImplementation(() => {
+        throw new Error('the render blew up too');
+      });
+
+      rescanButton().click();
+      await settle();
+
+      // Both failures reported, which is only possible if the second was caught. Asserted
+      // through the log rather than an `unhandledrejection` listener, because jsdom does
+      // not raise that event and a test built on it passes whether the guard is there or
+      // not — verified by removing the guard and watching such a test still pass.
+      const logged = consoleError.mock.calls.map((call) => String(call[0]));
+      expect(logged).toContain('[local-fonts] rescan failed');
+      expect(logged).toContain('[local-fonts] could not show the scan failure');
+    });
+
+    it('does not send the re-render back to disk to re-check what it just scanned', async () => {
+      withoutUpdateApi();
+      const refresh = vi.spyOn(plugin, 'rescanIfStale').mockResolvedValue(false);
+      vi.spyOn(plugin, 'rescan').mockResolvedValue();
+      tab.display();
+      await settle();
+      expect(refresh).toHaveBeenCalledTimes(1);
+
+      rescanButton().click();
+      await settle();
+
+      expect(refresh).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows a failed rescan in the tab, not only in the console', async () => {
+      withoutUpdateApi();
+      vi.spyOn(plugin, 'rescanIfStale').mockResolvedValue(false);
+      // Recorded when the rescan fails, not before, so the assertion below can only pass
+      // through a re-render that happened after the click.
+      let failure: string | null = null;
+      vi.spyOn(plugin, 'lastScanFailure').mockImplementation(() => failure);
+      vi.spyOn(plugin, 'rescan').mockImplementation(async () => {
+        await Promise.resolve();
+        failure = 'disk exploded';
+        throw new Error(failure);
+      });
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      tab.display();
+      await settle();
+      expect(tab.containerEl.textContent).not.toContain('Last scan failed');
+
+      rescanButton().click();
+      await settle();
+
+      expect(tab.containerEl.textContent).toContain('Last scan failed: disk exploded');
+      expect(consoleError).toHaveBeenCalled();
     });
   });
 });

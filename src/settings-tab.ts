@@ -125,6 +125,19 @@ export class LocalFontsSettingTab extends PluginSettingTab {
    */
   private checkInFlight = false;
 
+  /**
+   * Suppresses the refresh a render would otherwise kick off. Held while one is already
+   * running, and for the whole of every `rerender()` — every re-render this tab does is
+   * already the result of a scan that just finished, so re-checking the folder from
+   * inside one is pure duplicate work. Without it the 1.13+ path also recurses: it
+   * re-renders through `update()`, `update()` re-reads `getSettingDefinitions()`, and
+   * that is one of the two places a refresh starts.
+   */
+  private refreshInFlight = false;
+
+  /** Set while a user-requested full rescan runs, so a second click cannot start another. */
+  private rescanInFlight = false;
+
   constructor(
     app: App,
     private readonly plugin: LocalFontsPlugin,
@@ -132,10 +145,37 @@ export class LocalFontsSettingTab extends PluginSettingTab {
     super(app, plugin);
   }
 
+  /**
+   * What Obsidian actually calls every time this tab is shown, on 1.13+.
+   *
+   * Neither `display()` nor `getSettingDefinitions()` is enough to catch that moment.
+   * Read out of the running app (1.13.7), the base class is:
+   *
+   *     renderTab() { this.settingItems.length > 0 ? renderDeclaratively(this) : this.display() }
+   *     update()    { this.settingItems = this.getSettingDefinitions(); ...refresh the page }
+   *
+   * so once the declarative definitions have been built — once per plugin load —
+   * reopening the tab redraws from that cached array and calls neither hook again. That
+   * is exactly why a font dropped into the folder used to need a restart of Obsidian to
+   * show up: the only thing that had ever read the folder was the first render.
+   *
+   * `renderTab` is not in the published typings, hence the prototype lookup rather than
+   * `super.renderTab()`. On a version that has no such method this is simply never
+   * called, and the refresh still happens through the two hooks below.
+   */
+  renderTab(...args: unknown[]): unknown {
+    this.refreshFromDisk();
+    const base = Object.getPrototypeOf(LocalFontsSettingTab.prototype) as {
+      renderTab?: (this: LocalFontsSettingTab, ...args: unknown[]) => unknown;
+    };
+    return base.renderTab?.apply(this, args);
+  }
+
   override display(): void {
     // display() runs again every time the tab is reopened; without this the controls stack.
     this.containerEl.empty();
 
+    this.refreshFromDisk();
     const families = this.plugin.families();
 
     this.renderFolder();
@@ -151,6 +191,7 @@ export class LocalFontsSettingTab extends PluginSettingTab {
    * can never render different settings or different diagnostics.
    */
   override getSettingDefinitions(): SettingDefinitionItem[] {
+    this.refreshFromDisk();
     const families = this.plugin.families();
     const familyNames = this.familyNames(families);
     const emojiFamilyNames = this.emojiFamilyNames(families);
@@ -298,10 +339,47 @@ export class LocalFontsSettingTab extends PluginSettingTab {
         text.inputEl.addEventListener('blur', () => {
           this.commitFolderChange(text.inputEl.value.trim()).catch((error: unknown) => {
             console.error('[local-fonts] failed to apply the new fonts folder', error);
+            this.showRecordedFailure();
           });
         });
       },
     );
+  }
+
+  /**
+   * Bring the cache in line with the folder as it is right now, and re-render if that
+   * changed anything. Called from both render entry points, because opening the tab is
+   * the one moment the user is most likely to have just dropped a font in — before this,
+   * a new file only showed up after restarting Obsidian.
+   *
+   * Deliberately fire-and-forget rather than awaited: `display()` and
+   * `getSettingDefinitions()` are synchronous by contract, and making the tab wait on
+   * disk before drawing anything would trade a stale list for an empty one. The cached
+   * list is drawn immediately and replaced if it turns out to be behind.
+   *
+   * The check underneath is a stat sweep of the folder, measured at 2.8ms across 45
+   * files through Obsidian's own adapter — the parse only follows when something really
+   * did change, and only for the files that changed.
+   */
+  private refreshFromDisk(): void {
+    if (this.refreshInFlight) {
+      return;
+    }
+    this.refreshInFlight = true;
+    this.plugin
+      .rescanIfStale()
+      .then((changed) => {
+        if (changed) {
+          this.rerender();
+        }
+      })
+      .catch((error: unknown) => {
+        console.error('[local-fonts] could not refresh the font list', error);
+        this.showRecordedFailure();
+      })
+      .finally(() => {
+        this.refreshInFlight = false;
+      });
   }
 
   private async commitFolderChange(folder: string): Promise<void> {
@@ -311,23 +389,52 @@ export class LocalFontsSettingTab extends PluginSettingTab {
     this.plugin.settings.folder = folder;
     await this.plugin.saveSettings();
     await this.plugin.rescan();
-    this.refreshAfterFolderChange();
+    this.rerender();
   }
 
   /**
-   * The folder change affects which families exist, so both rendering paths need a
-   * full structural refresh, not just a value update. `update()` (which re-reads
-   * `getSettingDefinitions()`) only exists on Obsidian 1.13+, where `display()` is
-   * never called by the framework and calling it manually would duplicate the
-   * declaratively-rendered DOM instead of replacing it — so this picks whichever of
-   * the two the running Obsidian version actually supports, rather than assuming.
+   * Rebuild the whole tab, for the three things that change which families exist: a
+   * folder change, a refresh that found the folder had moved on, and a forced rescan.
+   * All three need a full structural refresh, not just a value update.
+   *
+   * `update()` (which re-reads `getSettingDefinitions()`) only exists on Obsidian 1.13+,
+   * where `display()` is never called by the framework and calling it manually would
+   * duplicate the declaratively-rendered DOM instead of replacing it — so this picks
+   * whichever of the two the running Obsidian version actually supports, rather than
+   * assuming.
    */
-  private refreshAfterFolderChange(): void {
-    const withUpdate = this as unknown as { update?: () => void };
-    if (typeof withUpdate.update === 'function') {
-      withUpdate.update();
-    } else {
-      this.display();
+  /**
+   * Put a scan failure the plugin has already recorded on screen, by rebuilding the tab
+   * so its diagnostics section reads `lastScanFailure()` again.
+   *
+   * Every caller is an error handler on a promise chain nothing awaits — the folder
+   * field's blur, the settings-open refresh, the Rescan button. A throw from the render
+   * itself would leave those chains rejected with no consumer, so the one place a
+   * failure is least affordable would report it as an unhandled rejection and nothing
+   * else. Hence a second failure is logged and swallowed rather than propagated.
+   */
+  private showRecordedFailure(): void {
+    try {
+      this.rerender();
+    } catch (error) {
+      console.error('[local-fonts] could not show the scan failure', error);
+    }
+  }
+
+  private rerender(): void {
+    const wasRefreshing = this.refreshInFlight;
+    // See `refreshInFlight`: a re-render always follows a scan, so the render it performs
+    // must not go back to disk to check whether that scan is already out of date.
+    this.refreshInFlight = true;
+    try {
+      const withUpdate = this as unknown as { update?: () => void };
+      if (typeof withUpdate.update === 'function') {
+        withUpdate.update();
+      } else {
+        this.display();
+      }
+    } finally {
+      this.refreshInFlight = wasRefreshing;
     }
   }
 
@@ -435,6 +542,9 @@ export class LocalFontsSettingTab extends PluginSettingTab {
         cls: 'local-fonts-empty',
         text: `No fonts found in ${this.plugin.settings.folder}. Put font files there, one folder per family.`,
       });
+      // Rendered before the early return as well: a folder that looks empty is one of the
+      // cases where being able to force a re-read by hand matters most.
+      this.renderRescanButton(section);
       return section;
     }
 
@@ -442,8 +552,44 @@ export class LocalFontsSettingTab extends PluginSettingTab {
     for (const [family, faces] of sortedEntries) {
       this.renderFamilyCard(section, family, faces, engine);
     }
-    this.renderCheckButton(section);
+    this.renderButtons(section);
     return section;
+  }
+
+  private renderButtons(parent: HTMLElement): void {
+    this.renderCheckButton(parent);
+    this.renderRescanButton(parent);
+  }
+
+  /**
+   * Re-read and re-parse every file in the folder, ignoring the cache.
+   *
+   * The automatic check compares each file's size and mtime, which misses a font
+   * replaced in place by one that happens to match both — `touch -r`, `rsync -t`, an
+   * archive unpacked with its timestamps and a restore from backup all produce exactly
+   * that. Detecting it automatically would mean reading every font on every start, which
+   * is the cost the cache exists to avoid, so it lives behind this button instead.
+   */
+  private renderRescanButton(parent: HTMLElement): void {
+    const button = parent.createEl('button', { text: 'Rescan' });
+    button.addEventListener('click', () => {
+      if (this.rescanInFlight) {
+        return;
+      }
+      this.rescanInFlight = true;
+      this.plugin
+        .rescan({ force: true })
+        .then(() => {
+          this.rerender();
+        })
+        .catch((error: unknown) => {
+          console.error('[local-fonts] rescan failed', error);
+          this.showRecordedFailure();
+        })
+        .finally(() => {
+          this.rescanInFlight = false;
+        });
+    });
   }
 
   private renderFamilyCard(
