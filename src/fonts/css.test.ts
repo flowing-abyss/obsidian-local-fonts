@@ -50,6 +50,130 @@ describe('buildCss', () => {
     expect(css).toContain('font-style: italic;');
   });
 
+  describe('variable fonts', () => {
+    const wght = (min: number, max: number, def = 400): FaceRecord['axes'] => [
+      { tag: 'wght', min, default: def, max },
+    ];
+
+    it('declares the wght axis as a range, so the browser instantiates it instead of faking bold', () => {
+      const css = buildCss({
+        faces: [face({ weight: 400, axes: wght(100, 900) })],
+        roles: DEFAULT_SETTINGS.roles,
+        hardOverride: false,
+        resolve,
+      });
+
+      expect(css).toContain('font-weight: 100 900;');
+      expect(css).not.toContain('font-weight: 400;');
+    });
+
+    it('leaves a static face on its single weight', () => {
+      const css = buildCss({
+        faces: [face({ weight: 700, axes: [{ tag: 'opsz', min: 8, default: 14, max: 144 }] })],
+        roles: DEFAULT_SETTINGS.roles,
+        hardOverride: false,
+        resolve,
+      });
+
+      expect(css).toContain('font-weight: 700;');
+    });
+
+    it('collapses a degenerate axis whose ends meet to the single weight it can produce', () => {
+      const css = buildCss({
+        faces: [face({ weight: 400, axes: wght(500, 500) })],
+        roles: DEFAULT_SETTINGS.roles,
+        hardOverride: false,
+        resolve,
+      });
+
+      expect(css).toContain('font-weight: 500;');
+    });
+
+    // An out-of-range value makes the whole descriptor invalid, and a dropped
+    // font-weight descriptor defaults to `normal` — so a malformed fvar would silently
+    // cost the face the weight its OS/2 table does state. Clamping keeps the descriptor
+    // valid and the range as wide as CSS allows.
+    it('clamps a range that runs outside what CSS accepts, rather than emitting invalid CSS', () => {
+      const css = buildCss({
+        faces: [face({ weight: 400, axes: wght(0, 2000) })],
+        roles: DEFAULT_SETTINGS.roles,
+        hardOverride: false,
+        resolve,
+      });
+
+      expect(css).toContain('font-weight: 1 1000;');
+    });
+
+    it('falls back to the parsed weight when the axis is nonsense', () => {
+      const css = buildCss({
+        faces: [face({ weight: 300, axes: wght(900, 100) })],
+        roles: DEFAULT_SETTINGS.roles,
+        hardOverride: false,
+        resolve,
+      });
+
+      expect(css).toContain('font-weight: 300;');
+    });
+
+    it.each([
+      ['a non-finite minimum', Number.NaN, 900],
+      ['a non-finite maximum', 100, Number.NaN],
+      ['an infinite maximum', 100, Number.POSITIVE_INFINITY],
+    ])('falls back to the parsed weight when the axis carries %s', (_label, min, max) => {
+      const css = buildCss({
+        faces: [face({ weight: 300, axes: wght(min, max) })],
+        roles: DEFAULT_SETTINGS.roles,
+        hardOverride: false,
+        resolve,
+      });
+
+      expect(css).toContain('font-weight: 300;');
+      expect(css).not.toContain('NaN');
+      expect(css).not.toContain('Infinity');
+    });
+
+    it('rounds a fixed-point bound instead of spelling out its binary error', () => {
+      const css = buildCss({
+        faces: [face({ weight: 400, axes: wght(99.99998474121094, 900.0000152587891) })],
+        roles: DEFAULT_SETTINGS.roles,
+        hardOverride: false,
+        resolve,
+      });
+
+      expect(css).toContain('font-weight: 100 900;');
+    });
+
+    /**
+     * A folder holding both `Inter[wght].woff2` and `Inter-Bold.woff2` gives one family
+     * two faces that both answer for weight 700 — a range that contains it and a static
+     * that states it. `selectFaces` keys on the face's own parsed weight, so it has no
+     * reason to drop either, and both are declared.
+     *
+     * Which one the browser then uses is the browser's decision, and it is a good one.
+     * Measured in Obsidian's renderer over two files with unmistakably different metrics
+     * (a monospace file declared `100 900` against a proportional file declared `700`),
+     * both declaration orders: at 700 the static won, at 500 the range won, identically
+     * whichever was written first. An exact weight beats a range containing it, so the
+     * static keeps the weight it was built for and the variable file supplies every
+     * weight nothing else covers. There is nothing here for this code to arbitrate.
+     */
+    it('declares both a variable face and a static one that falls inside its range', () => {
+      const css = buildCss({
+        faces: [
+          face({ path: '.fonts/probe/var.woff2', weight: 400, axes: wght(100, 900) }),
+          face({ path: '.fonts/probe/bold.woff2', weight: 700 }),
+        ],
+        roles: DEFAULT_SETTINGS.roles,
+        hardOverride: false,
+        resolve,
+      });
+
+      expect(css).toContain('font-weight: 100 900;');
+      expect(css).toContain('font-weight: 700;');
+      expect(css.match(/@font-face/g)).toHaveLength(2);
+    });
+  });
+
   it('sets font-display: swap so text is never invisible while a font loads', () => {
     const css = buildCss({
       faces: [face({})],

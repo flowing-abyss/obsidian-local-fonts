@@ -68,12 +68,63 @@ export function quote(family: string): string {
   return `'${family.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
 }
 
+/** The closed interval CSS allows a `font-weight` value in. */
+const CSS_WEIGHT_MIN = 1;
+const CSS_WEIGHT_MAX = 1000;
+
+/**
+ * fvar stores axis bounds as 16.16 fixed point, so a value the designer entered as 100
+ * can come back as 99.99998474121094. Three decimals is finer than any weight axis is
+ * ever authored to and keeps the emitted CSS readable.
+ */
+function tidy(value: number): number {
+  return Number(value.toFixed(3));
+}
+
+/**
+ * The `font-weight` descriptor for one face: a range when the file carries a `wght`
+ * variation axis, the single parsed weight otherwise.
+ *
+ * This is what makes a variable font actually variable. With a single value declared,
+ * the browser has exactly one instance to match against and answers every other weight
+ * by synthesising one — smeared outlines instead of the real design. Measured in
+ * Obsidian's own renderer over New York (wght 400-1000), the width of a 100px line was
+ * identical at 400, 700 and 1000 with a single value declared, and 660/735/810 px with
+ * the range declared.
+ *
+ * Bounds are clamped rather than trusted. An out-of-range value makes the whole
+ * descriptor invalid, and an invalid `font-weight` descriptor is dropped and defaults to
+ * `normal` — so one malformed fvar would cost the face even the weight its OS/2 table
+ * states. A range that is inverted, non-finite or empty after clamping falls back to
+ * that stated weight, which is always a valid value.
+ *
+ * Only `wght` is read. `wdth` and `slnt` are deliberately left alone: nothing in
+ * Obsidian requests a condensed or oblique variant, so declaring those ranges would add
+ * descriptors that never change a rendering while widening what face matching has to
+ * resolve.
+ */
+function weightDescriptor(face: FaceRecord): string {
+  // First match wins. An fvar table is not supposed to carry a tag twice, and a file
+  // that does is already telling us its axis records cannot all be trusted; taking the
+  // first is at least the one a shaping engine reads as authoritative.
+  const axis = face.axes.find((candidate) => candidate.tag === 'wght');
+  if (axis === undefined || !Number.isFinite(axis.min) || !Number.isFinite(axis.max)) {
+    return String(face.weight);
+  }
+  const min = tidy(Math.max(axis.min, CSS_WEIGHT_MIN));
+  const max = tidy(Math.min(axis.max, CSS_WEIGHT_MAX));
+  if (min > max) {
+    return String(face.weight);
+  }
+  return min === max ? String(min) : `${String(min)} ${String(max)}`;
+}
+
 function fontFace(face: FaceRecord, url: string, isEmoji: boolean): string {
   const lines = [
     '@font-face {',
     `  font-family: ${quote(face.family)};`,
     `  font-style: ${face.italic ? 'italic' : 'normal'};`,
-    `  font-weight: ${String(face.weight)};`,
+    `  font-weight: ${weightDescriptor(face)};`,
     '  font-display: swap;',
     `  src: url('${url}') format('${CSS_FORMAT[face.format]}');`,
   ];
