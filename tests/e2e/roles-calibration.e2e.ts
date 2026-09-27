@@ -1,5 +1,6 @@
 import { browser, expect } from '@wdio/globals';
 import { describe, it } from 'mocha';
+import type { WorkspaceLeaf } from 'obsidian';
 import type { PluginSettings } from '../../src/settings.js';
 import { navigateRoleEditor } from './helpers/editor.js';
 import { observeNativeFocusBoundary } from './helpers/native-focus.js';
@@ -14,7 +15,7 @@ import {
 } from './helpers/roles.js';
 
 interface NativeWindowOwner extends Window {
-  electronWindow: { id: number };
+  electronWindow: { id: number; focus(): void };
   electron: {
     remote: {
       BrowserWindow: { fromId(id: number): { hide(): void; show(): void; isVisible(): boolean } };
@@ -39,6 +40,80 @@ async function openExistingPopout(): Promise<void> {
       (existing as NativeWindowOwner).electronWindow.id,
     ).show();
   });
+}
+
+async function selectSetupRoot(root: 'main' | 'floating', pinned: boolean): Promise<string> {
+  const result = await browser.executeObsidian(
+    async ({ app }, intendedRoot: string, pin: boolean) => {
+      try {
+        const existing = (window as Window & { __roleExistingPopout?: Window })
+          .__roleExistingPopout;
+        const candidates: WorkspaceLeaf[] = [];
+        app.workspace.iterateAllLeaves((leaf) => {
+          if (
+            intendedRoot === 'main'
+              ? leaf.getRoot() === app.workspace.rootSplit
+              : leaf.view.containerEl.ownerDocument === existing?.document
+          )
+            candidates.push(leaf);
+        });
+        const selected = candidates[candidates.length - 1];
+        if (selected === undefined) throw new Error('Missing intended setup leaf');
+        const win = selected.view.containerEl.ownerDocument.defaultView;
+        if (win === null) throw new Error('Setup leaf has no native window');
+        const native = (
+          window as unknown as NativeWindowOwner
+        ).electron.remote.BrowserWindow.fromId(
+          (win as unknown as NativeWindowOwner).electronWindow.id,
+        );
+        let complete: () => void = () => {};
+        let fail: (error: Error) => void = () => {};
+        const focused = new Promise<void>((resolve, reject) => {
+          complete = resolve;
+          fail = reject;
+        });
+        const onFocus = (): void => {
+          if (win.document.hasFocus()) complete();
+        };
+        // Same native completion boundary as scenario restoration: real focus,
+        // with a failure-only deadline and listener/timer cleanup on every path.
+        const deadline = window.setTimeout(() => {
+          fail(new Error('Timed out waiting for setup native focus'));
+        }, 10_000);
+        try {
+          win.addEventListener('focus', onFocus);
+          native.show();
+          onFocus();
+          await focused;
+        } finally {
+          window.clearTimeout(deadline);
+          win.removeEventListener('focus', onFocus);
+        }
+        // Commit and snapshot only after native activation. A pending pop-out
+        // callback must not supply the ID for a case intended to start on main.
+        selected.setPinned(pin);
+        app.workspace.setActiveLeaf(selected, { focus: true });
+        const active = (app.workspace as unknown as ActiveLeafWorkspace).activeLeaf;
+        return {
+          setupError: null,
+          id: (selected as unknown as { id: string }).id,
+          active: (active as unknown as { id: string } | null)?.id ?? null,
+          root: active?.getRoot() === app.workspace.rootSplit ? 'main' : 'floating',
+          focused: win.document.hasFocus(),
+        };
+      } catch (error) {
+        // Renderer rejection can trigger WebDriver retries. Fail once in Node.
+        return { setupError: String(error) };
+      }
+    },
+    root,
+    pinned,
+  );
+  if (result.setupError !== null) throw new Error(result.setupError);
+  expect(result.root).toBe(root);
+  expect(result.active).toBe(result.id);
+  expect(result.focused).toBe(true);
+  return result.id;
 }
 
 describe('calibrated real font rendering', () => {
@@ -225,6 +300,80 @@ describe('calibrated real font rendering', () => {
     });
   });
 
+  for (const blocked of ['focus', 'show'] as const)
+    it(
+      blocked === 'focus'
+        ? 'awaits setup native focus before selecting and snapshotting the intended root'
+        : 'reports canceled setup activation once and permits the next selection',
+      async function () {
+        if (!(await browser.executeObsidian(({ obsidian }) => obsidian.Platform.isDesktopApp)))
+          this.skip();
+        await withRoleScenario('setup native focus completion', async () => {
+          await openExistingPopout();
+          await selectSetupRoot('floating', false);
+          await browser.executeObsidian((_, method: 'focus' | 'show') => {
+            const owner = window as unknown as NativeWindowOwner & {
+              __restoreSetupRequest?: () => void;
+              __setupRequestCount?: number;
+            };
+            const native =
+              method === 'focus'
+                ? owner.electronWindow
+                : owner.electron.remote.BrowserWindow.fromId(owner.electronWindow.id);
+            const original = Reflect.get(native, method) as unknown;
+            const descriptor = Object.getOwnPropertyDescriptor(native, method);
+            // Hold a selection's focus request, or cancel setup activation entirely.
+            // A hidden target cannot gain focus despite unrelated OS activation.
+            if (method === 'show')
+              owner.electron.remote.BrowserWindow.fromId(owner.electronWindow.id).hide();
+            owner.__setupRequestCount = 0;
+            Reflect.set(native, method, () => {
+              owner.__setupRequestCount = (owner.__setupRequestCount ?? 0) + 1;
+            });
+            owner.__restoreSetupRequest = () => {
+              // Restore both the method value and its original property shape.
+              Reflect.set(native, method, original);
+              if (descriptor === undefined) Reflect.deleteProperty(native, method);
+              else Object.defineProperty(native, method, descriptor);
+              if (method === 'show')
+                owner.electron.remote.BrowserWindow.fromId(owner.electronWindow.id).show();
+            };
+          }, blocked);
+          let selected = '';
+          try {
+            if (blocked === 'show') {
+              await expect(selectSetupRoot('main', false)).rejects.toThrow(
+                'Timed out waiting for setup native focus',
+              );
+              expect(
+                await browser.executeObsidian(
+                  () => (window as Window & { __setupRequestCount?: number }).__setupRequestCount,
+                ),
+              ).toBe(1);
+            } else selected = await selectSetupRoot('main', false);
+          } finally {
+            await browser.executeObsidian(() => {
+              const owner = window as Window & {
+                __restoreSetupRequest?: () => void;
+                __setupRequestCount?: number;
+                __roleExistingPopout?: Window;
+              };
+              owner.__restoreSetupRequest?.();
+              delete owner.__restoreSetupRequest;
+              delete owner.__setupRequestCount;
+              delete owner.__roleExistingPopout;
+            });
+          }
+          if (blocked === 'show') selected = await selectSetupRoot('main', false);
+          const focus = await observeNativeFocusBoundary();
+          expect(focus.before).toBe(selected);
+          expect(focus.active).toBe(selected);
+          for (const callback of focus.callbacks)
+            if (callback.focused) expect(callback.root).toBe('main');
+        });
+      },
+    );
+
   for (const [activeRoot, hidden] of [
     ['main', false],
     ['floating', false],
@@ -268,22 +417,9 @@ describe('calibrated real font rendering', () => {
               }),
             { timeout: 10_000, timeoutMsg: 'Pre-existing pop-out did not become the active leaf' },
           );
-          if (activeRoot === 'main') {
-            await browser.executeObsidian(({ app }) => {
-              app.workspace.iterateAllLeaves((leaf) => {
-                if (leaf.getRoot() === app.workspace.rootSplit)
-                  app.workspace.setActiveLeaf(leaf, { focus: true });
-              });
-            });
-          }
           const before = await popoutCount();
           const nativeHandlesBefore = await browser.getWindowHandles();
-          const activeBefore = await browser.executeObsidian(({ app }, pin: boolean) => {
-            const leaf = (app.workspace as unknown as ActiveLeafWorkspace).activeLeaf;
-            if (leaf === null) throw new Error('Missing pre-existing active pop-out leaf');
-            leaf.setPinned(pin);
-            return (leaf as unknown as { id: string }).id;
-          }, pinned);
+          const activeBefore = await selectSetupRoot(activeRoot, pinned);
           let failedAsExpected = false;
           try {
             await withRoleScenario('pop-out partial failure', async () => {
