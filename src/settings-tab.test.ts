@@ -1132,172 +1132,199 @@ describe('LocalFontsSettingTab', () => {
   });
 
   describe('the Check button', () => {
-    // isFamilyApplied measures real font-rendered pixel widths; jsdom never actually
-    // rasterises fonts, so measured widths never differ and it always reports "not
-    // applied". Mocking it here is the only way to exercise the "rendering" branch.
+    const face = (family: string, colorFormats: Array<'COLR1'> = []) => ({
+      path: `.fonts/${family}.woff2`,
+      format: 'woff2' as const,
+      size: 1,
+      mtime: 1,
+      family,
+      weight: 400,
+      italic: false,
+      colorFormats,
+      scripts: [],
+      axes: [],
+      license: null,
+      source: 'name-table' as const,
+    });
+
     afterEach(() => {
-      vi.doUnmock('./fonts/probe.js');
-      vi.resetModules();
+      Reflect.deleteProperty(document, 'fonts');
+      document.body.empty();
+      vi.restoreAllMocks();
     });
 
-    it('reports a role as rendering when the probe says it applied', async () => {
-      vi.resetModules();
-      vi.doMock('./fonts/probe.js', () => ({ isFamilyApplied: () => true }));
-      const { LocalFontsSettingTab: MockedTab } = await import('./settings-tab.js');
-      const mockedTab = new MockedTab(tab.app, plugin);
+    it('reports loading and requested stacks for Text plus Emoji', async () => {
       plugin.settings.cache = {
         version: 2,
         folder: '.fonts',
-        faces: [
-          {
-            path: '.fonts/a-400.woff2',
-            format: 'woff2',
-            size: 1,
-            mtime: 1,
-            family: 'Probe Sans',
-            weight: 400,
-            italic: false,
-            colorFormats: [],
-            scripts: [],
-            axes: [],
-            license: null,
-            source: 'name-table',
-          },
-        ],
+        faces: [face('Role Text'), face('Role Emoji', ['COLR1'])],
       };
-      plugin.settings.roles.text = 'Probe Sans';
-      mockedTab.display();
-
-      const button = Array.from(mockedTab.containerEl.querySelectorAll('button')).find(
-        (b) => b.textContent === 'Check',
-      );
-      button?.click();
-
-      const results = mockedTab.containerEl.querySelector('.local-fonts-check-results');
-      await vi.waitFor(() => {
-        expect(results?.textContent).toContain('Text: Probe Sans — rendering');
+      plugin.settings.roles.text = 'Role Text';
+      plugin.settings.roles.emoji = 'Role Emoji';
+      const preview = document.body.createDiv({ cls: 'markdown-preview-view' });
+      preview.createEl('p', { text: 'Body' }).setCssStyles({
+        fontFamily: '"__local-fonts-emoji__", "Role Text", sans-serif',
       });
-    });
-
-    it('reports whether each assigned role is actually rendering', async () => {
-      plugin.settings.cache = {
-        version: 2,
-        folder: '.fonts',
-        faces: [
-          {
-            path: '.fonts/a-400.woff2',
-            format: 'woff2',
-            size: 1,
-            mtime: 1,
-            family: 'Probe Sans',
-            weight: 400,
-            italic: false,
-            colorFormats: [],
-            scripts: [],
-            axes: [],
-            license: null,
-            source: 'name-table',
-          },
-        ],
-      };
-      plugin.settings.roles.text = 'Probe Sans';
+      document.body.createDiv({ cls: 'setting-item-name', text: 'Name' }).setCssStyles({
+        fontFamily: '"__local-fonts-emoji__", "Role Baseline"',
+      });
+      vi.spyOn(HTMLElement.prototype, 'getClientRects').mockReturnValue({
+        length: 1,
+      } as DOMRectList);
+      const load = vi.fn().mockResolvedValue([{}]);
+      Object.defineProperty(document, 'fonts', { configurable: true, value: { load } });
       tab.display();
-
       const button = Array.from(tab.containerEl.querySelectorAll('button')).find(
-        (b) => b.textContent === 'Check',
+        (item) => item.textContent === 'Check',
       );
       button?.click();
-
-      const results = tab.containerEl.querySelector('.local-fonts-check-results');
       await vi.waitFor(() => {
-        expect(results?.textContent).toContain('Text: Probe Sans');
+        const text = tab.containerEl.querySelector('.local-fonts-check-results')?.textContent ?? '';
+        expect(text).toContain('Text: Role Text — Local font loaded');
+        expect(text).toContain('Reading text: Selected font is first in the checked stack');
+        expect(text).toContain('Emoji: Role Emoji — Local font loaded');
+        expect(text).toContain('Settings label: Selected font is first in the checked stack');
       });
+      expect(load).toHaveBeenCalledWith("64px 'Role Text'", 'ABCАБя0123');
+      expect(load).toHaveBeenCalledWith("64px '__local-fonts-emoji__'", '😀');
     });
 
-    it('clears previous results on a second click rather than appending', async () => {
+    it('reports precedence and no matching surface separately from loading', async () => {
       plugin.settings.cache = {
         version: 2,
         folder: '.fonts',
-        faces: [
-          {
-            path: '.fonts/a-400.woff2',
-            format: 'woff2',
-            size: 1,
-            mtime: 1,
-            family: 'Probe Sans',
-            weight: 400,
-            italic: false,
-            colorFormats: [],
-            scripts: [],
-            axes: [],
-            license: null,
-            source: 'name-table',
-          },
-        ],
+        faces: [face('Role Text'), face('Role Mono')],
       };
-      plugin.settings.roles.text = 'Probe Sans';
-      tab.display();
-
-      const button = Array.from(tab.containerEl.querySelectorAll('button')).find(
-        (b) => b.textContent === 'Check',
-      );
-      const results = tab.containerEl.querySelector('.local-fonts-check-results');
-
-      button?.click();
-      await vi.waitFor(() => {
-        expect(results?.querySelectorAll('p')).toHaveLength(1);
+      plugin.settings.roles.text = 'Role Text';
+      plugin.settings.roles.monospace = 'Role Mono';
+      document.body
+        .createDiv({ cls: 'markdown-preview-view' })
+        .createEl('p', { text: 'Body' })
+        .setCssStyles({
+          fontFamily: 'Role Baseline, Role Text',
+        });
+      vi.spyOn(HTMLElement.prototype, 'getClientRects').mockReturnValue({
+        length: 1,
+      } as DOMRectList);
+      Object.defineProperty(document, 'fonts', {
+        configurable: true,
+        value: { load: vi.fn().mockResolvedValue([{}]) },
       });
-
-      button?.click();
+      tab.display();
+      Array.from(tab.containerEl.querySelectorAll('button'))
+        .find((item) => item.textContent === 'Check')
+        ?.click();
       await vi.waitFor(() => {
-        expect(results?.querySelectorAll('p')).toHaveLength(1);
+        const text = tab.containerEl.querySelector('.local-fonts-check-results')?.textContent ?? '';
+        expect(text).toContain('Text: Role Text — Local font loaded');
+        expect(text).toContain('Reading text: Another font is listed first here');
+        expect(text).toContain('Monospace: Role Mono — Local font loaded');
+        expect(text).toContain('No matching open surface to check');
       });
     });
 
-    it('ignores a click while a check is already in flight, rather than racing two runs', async () => {
-      // runCheck awaits document.fonts.load per role before measuring; a second click
-      // before the first run settles could otherwise interleave two runs' DOM writes —
-      // the second run's results.empty() landing after the first run has already
-      // started appending rows, leaving rows from both runs behind.
-      plugin.settings.cache = {
-        version: 2,
-        folder: '.fonts',
-        faces: [
-          {
-            path: '.fonts/a-400.woff2',
-            format: 'woff2',
-            size: 1,
-            mtime: 1,
-            family: 'Probe Sans',
-            weight: 400,
-            italic: false,
-            colorFormats: [],
-            scripts: [],
-            axes: [],
-            license: null,
-            source: 'name-table',
-          },
-        ],
-      };
-      plugin.settings.roles.text = 'Probe Sans';
+    it('uses the displayed results ownerDocument for loading and computed stacks', async () => {
+      plugin.settings.cache = { version: 2, folder: '.fonts', faces: [face('Role Text')] };
+      plugin.settings.roles.text = 'Role Text';
       tab.display();
-
-      const button = Array.from(tab.containerEl.querySelectorAll('button')).find(
-        (b) => b.textContent === 'Check',
+      const frame = document.body.createEl('iframe');
+      const other = frame.contentDocument;
+      if (other === null) throw new Error('No iframe document');
+      const view = document.body.createDiv({ cls: 'markdown-preview-view' });
+      view.createEl('p', { text: 'Body' }).setCssStyles({ fontFamily: 'Role Text' });
+      other.body.appendChild(view);
+      const results = tab.containerEl.querySelector<HTMLElement>('.local-fonts-check-results');
+      if (results === null) throw new Error('No results');
+      other.body.appendChild(results);
+      const load = vi.fn().mockResolvedValue([{}]);
+      Object.defineProperty(other, 'fonts', { configurable: true, value: { load } });
+      if (other.defaultView === null) throw new Error('No iframe window');
+      vi.spyOn(HTMLElement.prototype, 'getClientRects').mockReturnValue({
+        length: 1,
+      } as DOMRectList);
+      await (tab as unknown as { runCheck(results: HTMLElement): Promise<void> }).runCheck(results);
+      expect(load).toHaveBeenCalledWith("64px 'Role Text'", 'ABCАБя0123');
+      expect(results.textContent).toContain(
+        'Reading text: Selected font is first in the checked stack',
       );
-      const results = tab.containerEl.querySelector('.local-fonts-check-results');
+      frame.remove();
+    });
 
-      button?.click();
-      button?.click();
-
-      await vi.waitFor(() => {
-        expect(results?.querySelectorAll('p')).toHaveLength(1);
+    it('does not write into a results target removed during loading', async () => {
+      plugin.settings.cache = { version: 2, folder: '.fonts', faces: [face('Role Text')] };
+      plugin.settings.roles.text = 'Role Text';
+      tab.display();
+      const results = tab.containerEl.querySelector<HTMLElement>('.local-fonts-check-results');
+      if (results === null) throw new Error('No results');
+      let resolveLoad: (faces: object[]) => void = () => {};
+      Object.defineProperty(document, 'fonts', {
+        configurable: true,
+        value: {
+          load: () =>
+            new Promise<object[]>((resolve) => {
+              resolveLoad = resolve;
+            }),
+        },
       });
-      // Give any wrongly-scheduled second run a turn to (mis)fire before asserting
-      // the count stays put.
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(results?.querySelectorAll('p')).toHaveLength(1);
+      const pending = (
+        tab as unknown as { runCheck(results: HTMLElement): Promise<void> }
+      ).runCheck(results);
+      results.remove();
+      resolveLoad([{}]);
+      await pending;
+      expect(results.textContent).not.toContain('Text:');
+    });
+
+    it('ignores an overlapping Check click and replaces completed results on a later click', async () => {
+      plugin.settings.cache = { version: 2, folder: '.fonts', faces: [face('Role Text')] };
+      plugin.settings.roles.text = 'Role Text';
+      tab.display();
+      const button = Array.from(tab.containerEl.querySelectorAll('button')).find(
+        (item) => item.textContent === 'Check',
+      );
+      const results = tab.containerEl.querySelector<HTMLElement>('.local-fonts-check-results');
+      if (results === null) throw new Error('No results');
+      let resolveLoad: (faces: object[]) => void = () => {};
+      const load = vi.fn().mockImplementation(
+        () =>
+          new Promise<object[]>((resolve) => {
+            resolveLoad = resolve;
+          }),
+      );
+      Object.defineProperty(document, 'fonts', { configurable: true, value: { load } });
+      button?.click();
+      button?.click();
+      expect(load).toHaveBeenCalledTimes(1);
+      resolveLoad([{}]);
+      await vi.waitFor(() => {
+        expect(results.textContent).toContain('Text: Role Text — Local font loaded');
+      });
+      expect(results.querySelectorAll('.local-fonts-check-role')).toHaveLength(1);
+      await settle();
+      button?.click();
+      resolveLoad([{}]);
+      await vi.waitFor(() => {
+        expect(results.textContent).toContain('Text: Role Text — Local font loaded');
+      });
+      expect(load).toHaveBeenCalledTimes(2);
+      expect(results.querySelectorAll('.local-fonts-check-role')).toHaveLength(1);
+    });
+
+    it('does not probe a same-named system font when the Emoji alias is unavailable', async () => {
+      plugin.settings.cache = { version: 2, folder: '.fonts', faces: [face('Role Text')] };
+      plugin.settings.roles.emoji = 'Missing Emoji';
+      tab.display();
+      const load = vi.fn().mockResolvedValue([{}]);
+      Object.defineProperty(document, 'fonts', { configurable: true, value: { load } });
+      Array.from(tab.containerEl.querySelectorAll('button'))
+        .find((item) => item.textContent === 'Check')
+        ?.click();
+      await vi.waitFor(() => {
+        expect(tab.containerEl.querySelector('.local-fonts-check-results')?.textContent).toContain(
+          'Emoji: Missing Emoji — Could not verify this font',
+        );
+      });
+      expect(load).not.toHaveBeenCalled();
     });
   });
 

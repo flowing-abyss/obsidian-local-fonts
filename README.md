@@ -72,13 +72,18 @@ ttf, then the smaller file.
 **Fonts folder** takes a vault-relative path.
 
 **Text**, **Interface**, **Monospace** and **Headings** each take a family from the fonts
-you have, or leave the theme alone.
+you have, or leave the theme alone. Assignments are independent: you can choose several
+ordinary roles together, then add or clear Emoji without changing those choices. Unassigned
+roles retain Obsidian's native font inheritance.
 
-**Emoji** sits first in every font stack and covers only emoji code points, so it leaves
-digits and punctuation to the family you chose for that role.
+**Emoji** adds a colour font to standard native font paths throughout Obsidian, independently
+of the other choices. Its face is limited to emoji code points, leaving ordinary letters,
+digits and punctuation to the font chosen for each surface. Settings sync between devices;
+the font files must also be present on each device.
 
-**Hard override** forces your fonts with `!important` for themes that set `font-family`
-directly instead of using Obsidian's variables. Icon elements stay untouched.
+In normal mode, a font set in Appearance or by a theme can take precedence over a plugin
+choice. **Hard override** forces assigned fonts with `!important` on the corresponding
+standard surfaces when a theme sets `font-family` directly. Icon elements stay untouched.
 
 ## Diagnostics
 
@@ -89,8 +94,10 @@ the family itself, and it loads only once you expand the card.
 
 ![A family card showing OS support badges, a sample line, weight chips and per-face details](assets/diagnostics-card.png)
 
-The **Check** button measures what actually rendered on the device you are using. Reach
-for it after changing fonts, especially on a phone.
+The **Check** button asks the current device to load each assigned local font, then inspects
+the requested font stacks of representative open views. It reports a load failure, an
+unverified load, and whether another family precedes the selection. It cannot confirm
+which font drew every character; glyph coverage and browser fallback still decide that.
 
 The **Rescan** button re-reads every file in the folder from scratch. Change detection
 normally compares each file's size and modification time, which is quick enough to run
@@ -116,7 +123,8 @@ carrying both. Any combination of those works.
 
 The test suite runs on every release against Obsidian 1.0.3 and the latest stable
 release, covering Windows, macOS, Linux and Android on real devices. iOS has no
-automation available, so the Check button is how you confirm a font applied there.
+automation available; Check can report loading and requested stack order there, but
+the final glyph rendering still needs visual inspection on an iOS device.
 
 Emoji on iOS depend on which colour formats your files carry. When they fail, the card
 shows which format is missing.

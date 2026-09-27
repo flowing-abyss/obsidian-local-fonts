@@ -5,10 +5,22 @@ import {
   type App,
   type SettingDefinitionItem,
 } from 'obsidian';
+import { resolveEmojiAlias } from './fonts/css.js';
 import { quote } from './fonts/family.js';
 import { canRender, OS_ENGINES, SUPPORTED_OSES, type Engine, type OS } from './fonts/platform.js';
-import { isFamilyApplied } from './fonts/probe.js';
-import { explainSelection, type FaceVerdict, type SelectionReason } from './fonts/select.js';
+import {
+  inspectStack,
+  loadLocalFont,
+  type FontLoadStatus,
+  type StackStatus,
+} from './fonts/probe.js';
+import {
+  explainSelection,
+  selectFaces,
+  type FaceVerdict,
+  type SelectionReason,
+} from './fonts/select.js';
+import { findFontSurfaces } from './fonts/surfaces.js';
 import type { FaceRecord, VariableAxis } from './fonts/types.js';
 import type LocalFontsPlugin from './main.js';
 import type { RoleName } from './settings.js';
@@ -19,8 +31,71 @@ const ROLES: ReadonlyArray<readonly [RoleName, string, string]> = [
   ['interface', 'Interface', 'Menus, sidebars and dialogs'],
   ['monospace', 'Monospace', 'Code blocks and inline code'],
   ['headings', 'Headings', 'Levels 1 to 6'],
-  ['emoji', 'Emoji', 'Placed first in every stack, limited to emoji characters'],
+  [
+    'emoji',
+    'Emoji',
+    'Replaces emoji throughout Obsidian, independently of the other font choices.',
+  ],
 ];
+
+const LOAD_COPY: Record<FontLoadStatus, string> = {
+  loaded: 'Local font loaded',
+  failed: 'Local font could not be loaded',
+  unverified: 'Could not verify this font',
+};
+const STACK_COPY: Record<StackStatus, string> = {
+  first: 'Selected font is first in the checked stack',
+  preceded: 'Another font is listed first here',
+  absent: 'Selected font is absent from the checked stack',
+};
+
+interface CheckedSurface {
+  role: Exclude<RoleName, 'emoji'>;
+  name: string;
+  stack: string;
+}
+
+function isCurrentResult(results: HTMLElement): boolean {
+  return results.parentElement !== null;
+}
+
+async function loadForRole(
+  doc: Document,
+  input: { selected: readonly FaceRecord[]; role: RoleName; family: string; alias: string | null },
+): Promise<FontLoadStatus> {
+  const { selected, role, family, alias } = input;
+  if (role === 'emoji') {
+    return alias === null ? 'unverified' : loadLocalFont(doc, alias, '😀');
+  }
+  if (!selected.some((face) => face.family === family)) return 'unverified';
+  return loadLocalFont(doc, family, 'ABCАБя0123');
+}
+
+function renderStacks(
+  row: HTMLElement,
+  input: {
+    surfaces: readonly CheckedSurface[];
+    role: RoleName;
+    family: string | null;
+    alias: string | null;
+  },
+): void {
+  const { surfaces, role, family, alias } = input;
+  const matching = surfaces.filter((surface) => role === 'emoji' || surface.role === role);
+  if (matching.length === 0) {
+    row.createEl('p', { text: 'No matching open surface to check' });
+    return;
+  }
+  if (family === null) {
+    row.createEl('p', { text: 'Could not verify this font' });
+    return;
+  }
+  const ignored = role !== 'emoji' && alias !== null ? [alias] : [];
+  for (const surface of matching) {
+    const status = inspectStack(surface.stack, family, ignored);
+    row.createEl('p', { text: `${surface.name}: ${STACK_COPY[status]} (${surface.stack})` });
+  }
+}
 
 const NONE = '';
 
@@ -116,8 +191,7 @@ function roleOptions(
 
 export class LocalFontsSettingTab extends PluginSettingTab {
   /**
-   * `runCheck` is async (it awaits each family's font load before measuring — see
-   * `isFamilyApplied`), so a second click before the first run finishes would race
+   * `runCheck` is async (it awaits each family's font load), so a second click before the first run finishes would race
    * it: the second run's `results.empty()` can execute before the first run has
    * finished appending its rows, leaving both runs' rows behind instead of just the
    * second's. Ignoring a click while one is already in flight is simpler and safer
@@ -652,27 +726,30 @@ export class LocalFontsSettingTab extends PluginSettingTab {
     });
   }
 
-  /**
-   * `isFamilyApplied` is async because it awaits `document.fonts.load` first — a face
-   * using `font-display: swap` (every face this plugin emits) is not fetched until
-   * something on screen has used it, so measuring before that would report a
-   * correctly-configured-but-not-yet-used family as absent.
-   */
   private async runCheck(results: HTMLElement): Promise<void> {
     results.empty();
-    // `containerEl.doc` is Obsidian's document accessor, correct in popout windows too;
-    // the test harness (obsidian-test-mocks) polyfills the same accessor onto jsdom's
-    // Node prototype, so this one line is exercised identically in both environments.
-    const doc = this.containerEl.doc;
+    const doc = results.ownerDocument;
+    const selected = selectFaces(this.plugin.settings.cache?.faces ?? [], this.engine());
+    const roles = { ...this.plugin.settings.roles };
+    const alias = resolveEmojiAlias(selected, roles.emoji);
+    const surfaces = findFontSurfaces(doc).map((surface) => ({
+      role: surface.role,
+      name: surface.name,
+      stack: doc.defaultView?.getComputedStyle(surface.element).fontFamily ?? '',
+    }));
+    if (!isCurrentResult(results)) return;
+    results.createEl('p', {
+      text: 'Checks font loading and the font stacks of open views. Results do not verify every rendered character.',
+    });
     for (const [role, name] of ROLES) {
-      const family = this.plugin.settings.roles[role];
-      if (family === null) {
-        continue;
-      }
-      const applied = await isFamilyApplied(family, doc);
-      results.createEl('p', {
-        text: `${name}: ${family} — ${applied ? 'rendering' : 'NOT rendering, the theme font is being used'}`,
-      });
+      const family = roles[role];
+      if (family === null) continue;
+      const probeFamily = role === 'emoji' ? alias : family;
+      const load = await loadForRole(doc, { selected, role, family, alias });
+      if (!isCurrentResult(results)) return;
+      const row = results.createDiv({ cls: 'local-fonts-check-role' });
+      row.createEl('p', { text: `${name}: ${family} — ${LOAD_COPY[load]}` });
+      renderStacks(row, { surfaces, role, family: probeFamily, alias });
     }
   }
 }
