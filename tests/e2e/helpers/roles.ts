@@ -209,14 +209,18 @@ async function endRoleScenario(): Promise<void> {
         const workspace = app.workspace as unknown as ActiveLeafWorkspace & {
           floatingSplit?: { children: Array<{ win: Window }> };
         };
+        const floatingFocused = (workspace.floatingSplit?.children ?? []).map(
+          ({ win }) => !win.closed && win.document.hasFocus(),
+        );
         trace.push({
           stage,
           time: Date.now(),
           active: (workspace.activeLeaf as unknown as { id: string } | null)?.id ?? null,
           mainFocused: document.hasFocus(),
-          floatingFocused: (workspace.floatingSplit?.children ?? []).map(
-            ({ win }) => !win.closed && win.document.hasFocus(),
-          ),
+          floatingFocused,
+          // WebDriver abbreviates nested arrays as [Array]; keep the decisive
+          // same-workspace focus observation visible in the existing trace.
+          anyFloatingFocused: floatingFocused.includes(true),
           ...details,
         });
       } catch (error) {

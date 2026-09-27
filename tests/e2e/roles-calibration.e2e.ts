@@ -22,6 +22,25 @@ interface NativeWindowOwner extends Window {
   };
 }
 
+async function openExistingPopout(): Promise<void> {
+  await browser.executeObsidian(async ({ app }) => {
+    // Latest Obsidian defaults a newly created window leaf to inactive; its
+    // delayed focus callback is not a reliable setup selection boundary.
+    await app.workspace.openLinkText('Welcome.md', '', 'window', { active: true });
+    const children = (
+      app.workspace as unknown as { floatingSplit: { children: Array<{ win: Window }> } }
+    ).floatingSplit.children;
+    const existing = children[children.length - 1]?.win;
+    if (existing === undefined) throw new Error('Pre-existing pop-out did not open');
+    (window as Window & { __roleExistingPopout?: Window }).__roleExistingPopout = existing;
+    // Bring the original to the front before awaiting its initial active
+    // leaf; BrowserWindow.focus alone can ignore an occluded macOS window.
+    (window as unknown as NativeWindowOwner).electron.remote.BrowserWindow.fromId(
+      (existing as NativeWindowOwner).electronWindow.id,
+    ).show();
+  });
+}
+
 describe('calibrated real font rendering', () => {
   it('distinguishes every ordinary role face and both emoji faces', async () => {
     await withRoleScenario('calibration', async () => {
@@ -138,6 +157,74 @@ describe('calibrated real font rendering', () => {
     });
   });
 
+  it('selects the setup pop-out without relying on its automatic native focus callback', async function () {
+    if (!(await browser.executeObsidian(({ obsidian }) => obsidian.Platform.isDesktopApp)))
+      this.skip();
+    await withRoleScenario('explicit setup selection', async () => {
+      await browser.executeObsidian(({ app }) => {
+        const owner = window as Window & {
+          __restoreSetupFocus?: () => void;
+          __heldSetupFocus?: { calls: number; win: Window };
+        };
+        const workspace = app.workspace;
+        const event = workspace.on('window-open', (container, win) => {
+          workspace.offref(event);
+          const target = container as unknown as { onFocus(): void };
+          const descriptor = Object.getOwnPropertyDescriptor(target, 'onFocus');
+          const held = { calls: 0, win };
+          owner.__heldSetupFocus = held;
+          // Fault injection: defer the automatic callback, whose source waits
+          // 100ms then only selects a leaf if this document still has focus.
+          target.onFocus = () => {
+            held.calls++;
+          };
+          owner.__restoreSetupFocus = () => {
+            if (descriptor === undefined) Reflect.deleteProperty(target, 'onFocus');
+            else Object.defineProperty(target, 'onFocus', descriptor);
+          };
+        });
+        owner.__restoreSetupFocus = () => {
+          workspace.offref(event);
+        };
+      });
+      try {
+        await openExistingPopout();
+        await browser.waitUntil(
+          async () =>
+            browser.executeObsidian(
+              () =>
+                ((window as Window & { __heldSetupFocus?: { calls: number } }).__heldSetupFocus
+                  ?.calls ?? 0) > 0,
+            ),
+          { timeout: 10_000, timeoutMsg: 'The real setup window did not dispatch native focus' },
+        );
+        const selected = await browser.executeObsidian(({ app }) => {
+          const held = (window as Window & { __heldSetupFocus?: { win: Window } }).__heldSetupFocus;
+          const active = (app.workspace as unknown as ActiveLeafWorkspace).activeLeaf;
+          return {
+            belongsToOpenedWindow: active?.view.containerEl.ownerDocument === held?.win.document,
+            attached: (
+              app.workspace as unknown as { isAttached(leaf: unknown): boolean }
+            ).isAttached(active),
+          };
+        });
+        expect(selected).toEqual({ belongsToOpenedWindow: true, attached: true });
+      } finally {
+        await browser.executeObsidian(() => {
+          const owner = window as Window & {
+            __restoreSetupFocus?: () => void;
+            __heldSetupFocus?: unknown;
+            __roleExistingPopout?: Window;
+          };
+          owner.__restoreSetupFocus?.();
+          delete owner.__restoreSetupFocus;
+          delete owner.__heldSetupFocus;
+          delete owner.__roleExistingPopout;
+        });
+      }
+    });
+  });
+
   for (const [activeRoot, hidden] of [
     ['main', false],
     ['floating', false],
@@ -162,20 +249,7 @@ describe('calibrated real font rendering', () => {
         const startingCount = await popoutCount();
         expect(startingCount).toBe(0);
         try {
-          await browser.executeObsidian(async ({ app }) => {
-            await app.workspace.openLinkText('Welcome.md', '', 'window');
-            const children = (
-              app.workspace as unknown as { floatingSplit: { children: Array<{ win: Window }> } }
-            ).floatingSplit.children;
-            const existing = children[children.length - 1]?.win;
-            if (existing === undefined) throw new Error('Pre-existing pop-out did not open');
-            (window as Window & { __roleExistingPopout?: Window }).__roleExistingPopout = existing;
-            // Bring the original to the front before awaiting its initial active
-            // leaf; BrowserWindow.focus alone can ignore an occluded macOS window.
-            (window as unknown as NativeWindowOwner).electron.remote.BrowserWindow.fromId(
-              (existing as NativeWindowOwner).electronWindow.id,
-            ).show();
-          });
+          await openExistingPopout();
           await browser.waitUntil(async () => (await popoutCount()) > startingCount, {
             timeout: 10_000,
             timeoutMsg: 'Pre-existing pop-out was not registered',
