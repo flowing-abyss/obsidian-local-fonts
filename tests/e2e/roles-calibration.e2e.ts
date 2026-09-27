@@ -13,6 +13,15 @@ import {
   withRoleScenario,
 } from './helpers/roles.js';
 
+interface NativeWindowOwner extends Window {
+  electronWindow: { id: number };
+  electron: {
+    remote: {
+      BrowserWindow: { fromId(id: number): { hide(): void; show(): void; isVisible(): boolean } };
+    };
+  };
+}
+
 describe('calibrated real font rendering', () => {
   it('distinguishes every ordinary role face and both emoji faces', async () => {
     await withRoleScenario('calibration', async () => {
@@ -129,10 +138,14 @@ describe('calibrated real font rendering', () => {
     });
   });
 
-  for (const activeRoot of ['main', 'floating'] as const)
+  for (const [activeRoot, hidden] of [
+    ['main', false],
+    ['floating', false],
+    ['main', true],
+  ] as const)
     for (const pinned of [false, true])
       // eslint-disable-next-line complexity -- Native identity, selection, focus and pinned navigation are independent cleanup assertions.
-      it(`closes a newly opened pop-out and restores the ${activeRoot} active leaf, pinned ${pinned}`, async function () {
+      it(`closes a newly opened pop-out and restores the ${activeRoot} active leaf, pinned ${pinned}, hidden ${hidden}`, async function () {
         const isDesktop = await browser.executeObsidian(
           ({ obsidian }) => obsidian.Platform.isDesktopApp,
         );
@@ -155,6 +168,11 @@ describe('calibrated real font rendering', () => {
             const existing = children[children.length - 1]?.win;
             if (existing === undefined) throw new Error('Pre-existing pop-out did not open');
             (window as Window & { __roleExistingPopout?: Window }).__roleExistingPopout = existing;
+            // Bring the original to the front before awaiting its initial active
+            // leaf; BrowserWindow.focus alone can ignore an occluded macOS window.
+            (window as unknown as NativeWindowOwner).electron.remote.BrowserWindow.fromId(
+              (existing as NativeWindowOwner).electronWindow.id,
+            ).show();
           });
           await browser.waitUntil(async () => (await popoutCount()) > startingCount, {
             timeout: 10_000,
@@ -253,9 +271,23 @@ describe('calibrated real font rendering', () => {
                   await original.call(workspace, layout);
                 };
               });
-              throw new Error('deliberate assertion failure before pop-out measurement');
+              if (hidden) {
+                const visible = await browser.executeObsidian(() => {
+                  const owner = window as unknown as NativeWindowOwner;
+                  const native = owner.electron.remote.BrowserWindow.fromId(
+                    owner.electronWindow.id,
+                  );
+                  native.hide();
+                  return native.isVisible();
+                });
+                expect(visible).toBe(false);
+              }
+              if (!hidden)
+                throw new Error('deliberate assertion failure before pop-out measurement');
             });
+            failedAsExpected = hidden;
           } catch (error) {
+            if (hidden) throw error;
             expect(String(error)).toContain(
               'deliberate assertion failure before pop-out measurement',
             );
@@ -351,7 +383,13 @@ describe('calibrated real font rendering', () => {
             timeoutMsg: 'New role pop-out remained open after scenario cleanup',
           });
         } finally {
-          await browser.executeObsidian(({ app }) => {
+          await browser.executeObsidian(({ app }, restoreVisible: boolean) => {
+            if (restoreVisible) {
+              const nativeOwner = window as unknown as NativeWindowOwner;
+              nativeOwner.electron.remote.BrowserWindow.fromId(
+                nativeOwner.electronWindow.id,
+              ).show();
+            }
             const owner = window as Window & {
               __roleExistingPopout?: Window;
               __rolePopoutWitness?: {
@@ -377,7 +415,7 @@ describe('calibrated real font rendering', () => {
             if (owner.__roleExistingPopout !== undefined) windows.add(owner.__roleExistingPopout);
             for (const win of windows) if (!win.closed) win.close();
             delete owner.__roleExistingPopout;
-          });
+          }, hidden);
         }
         await browser.waitUntil(async () => (await popoutCount()) === startingCount, {
           timeout: 10_000,

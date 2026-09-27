@@ -52,7 +52,7 @@ export interface RoleCleanupObservation {
 
 interface NativeRoleWindow {
   isDestroyed(): boolean;
-  focus(): void;
+  show(): void;
   once(event: 'closed', callback: () => void): void;
   removeListener(event: 'closed', callback: () => void): void;
 }
@@ -150,7 +150,7 @@ async function beginRoleScenario(): Promise<void> {
 
 async function endRoleScenario(): Promise<void> {
   // eslint-disable-next-line complexity -- Self-contained renderer cleanup also snapshots the native restoration boundary.
-  await browser.executeObsidian(async ({ app }) => {
+  const result = await browser.executeObsidian(async ({ app }) => {
     const testWindow = window as Window & {
       __roleScenario?: RoleState;
       __roleCleanupObservation?: RoleCleanupObservation;
@@ -163,18 +163,51 @@ async function endRoleScenario(): Promise<void> {
       (window as unknown as ElectronRoleWindow).electron.remote.BrowserWindow.fromId(
         (win as ElectronRoleWindow).electronWindow.id,
       );
+    const awaitNativeEvent = async (
+      operation: string,
+      boundary: {
+        subscribe(complete: () => void): void;
+        unsubscribe(complete: () => void): void;
+        request(): void;
+        isComplete(): boolean;
+      },
+    ): Promise<void> => {
+      let complete: () => void = () => {};
+      let fail: (error: Error) => void = () => {};
+      const event = new Promise<void>((resolve, reject) => {
+        complete = resolve;
+        fail = reject;
+      });
+      // Failure-only deadline, below the existing 60s case budget. Success still
+      // requires the native event/observed state, never elapsed time.
+      const deadline = window.setTimeout(() => {
+        fail(new Error(`Timed out waiting for native ${operation}`));
+      }, 10_000);
+      try {
+        boundary.subscribe(complete);
+        boundary.request();
+        if (boundary.isComplete()) complete();
+        await event;
+      } finally {
+        window.clearTimeout(deadline);
+        boundary.unsubscribe(complete);
+      }
+    };
     const closeNative = async (win: Window): Promise<void> => {
       const native = nativeWindow(win);
       if (native === null || native.isDestroyed()) return;
       const started = performance.now();
-      await new Promise<void>((resolve, reject) => {
-        native.once('closed', resolve);
-        try {
+      await awaitNativeEvent('close', {
+        subscribe(complete) {
+          native.once('closed', complete);
+        },
+        unsubscribe(complete) {
+          if (!native.isDestroyed()) native.removeListener('closed', complete);
+        },
+        request() {
           win.close();
-        } catch (error) {
-          native.removeListener('closed', resolve);
-          reject(new Error(String(error)));
-        }
+        },
+        isComplete: () => native.isDestroyed(),
       });
       nativeTransitions.push({
         operation: 'closed',
@@ -186,21 +219,21 @@ async function endRoleScenario(): Promise<void> {
       const native = nativeWindow(win);
       if (native === null) throw new Error('Restored native window disappeared');
       const started = performance.now();
-      let complete: () => void = () => {};
-      const focused = (): void => {
-        win.removeEventListener('focus', focused);
-        complete();
-      };
-      await new Promise<void>((resolve, reject) => {
-        complete = resolve;
-        win.addEventListener('focus', focused);
-        try {
-          native.focus();
-          if (win.document.hasFocus()) focused();
-        } catch (error) {
-          win.removeEventListener('focus', focused);
-          reject(new Error(String(error)));
-        }
+      await awaitNativeEvent('focus', {
+        subscribe(complete) {
+          win.addEventListener('focus', complete);
+        },
+        unsubscribe(complete) {
+          win.removeEventListener('focus', complete);
+        },
+        request() {
+          // Electron 18/macOS focus() ignores occluded windows. show() also
+          // brings the saved test window forward, then the same native focus
+          // event/document state below establishes completion.
+          // https://www.electronjs.org/docs/latest/api/browser-window#winshow
+          native.show();
+        },
+        isComplete: () => win.document.hasFocus(),
       });
       nativeTransitions.push({
         operation: 'focused',
@@ -328,10 +361,18 @@ async function endRoleScenario(): Promise<void> {
       };
       delete testWindow.__roleScenario;
     }
-    if (errors.length > 0)
-      throw new Error(`Role scenario cleanup failed: ${errors.map(String).join('; ')}`);
-    return testWindow.__roleCleanupObservation;
+    // WebDriver retries rejected execute commands. Return the completed cleanup
+    // result, then propagate its failure in Node so a retry cannot hide it.
+    // Avoid a top-level `error` key too: WebDriver interprets it as a failed
+    // protocol response even when the execute command itself succeeded.
+    return {
+      observation: testWindow.__roleCleanupObservation,
+      cleanupError:
+        errors.length > 0 ? `Role scenario cleanup failed: ${errors.map(String).join('; ')}` : null,
+    };
   });
+  if (result?.cleanupError !== null && result?.cleanupError !== undefined)
+    throw new Error(result.cleanupError);
 }
 
 export async function applyRoles(roles: RoleAssignments, hardOverride: boolean): Promise<void> {
