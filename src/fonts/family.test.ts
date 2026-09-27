@@ -57,3 +57,12 @@ it('decodes CSS escaped code points and consumes only the optional whitespace te
     { name: 'AB', generic: false },
   ]);
 });
+
+it('rejects unescaped numeric identifiers while accepting quoted and escaped numeric names', () => {
+  expect(parseFontFamilies('123, serif')).toEqual([]);
+  expect(parseFontFamilies('-1, serif')).toEqual([]);
+  expect(parseFontFamilies("'123', \\31 23")).toEqual([
+    { name: '123', generic: false },
+    { name: '123', generic: false },
+  ]);
+});

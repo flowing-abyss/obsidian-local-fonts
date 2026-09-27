@@ -56,7 +56,7 @@ interface CheckedSurface {
 }
 
 function isCurrentResult(results: HTMLElement): boolean {
-  return results.parentElement !== null;
+  return results.isConnected;
 }
 
 async function loadForRole(

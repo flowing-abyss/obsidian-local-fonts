@@ -127,6 +127,50 @@ async function waitForSettingsRefresh(): Promise<void> {
   );
 }
 
+async function settingsSharesNoteDocument(): Promise<boolean> {
+  return browser.executeObsidian(({ app }) => {
+    const setting = (
+      app as unknown as {
+        setting: { tabContentContainer?: HTMLElement; activeTab?: { containerEl: HTMLElement } };
+      }
+    ).setting;
+    const visible = setting.tabContentContainer;
+    const root =
+      visible !== undefined && visible.getClientRects().length > 0
+        ? visible
+        : setting.activeTab?.containerEl;
+    if (root === undefined) throw new Error('Settings tab is not visible');
+    return root.ownerDocument === document;
+  });
+}
+
+async function assertReadableFallback(): Promise<void> {
+  await browser.executeObsidian(({ app }) => {
+    (app as unknown as { setting: { close(): void } }).setting.close();
+  });
+  await browser.waitUntil(
+    async () =>
+      browser.executeObsidian(() => {
+        const paragraph = document.querySelector<HTMLElement>('.markdown-preview-view p');
+        if (paragraph === null || paragraph.getClientRects().length === 0) return false;
+        const stack = window.getComputedStyle(paragraph).fontFamily;
+        if (!stack.includes('sans-serif')) return false;
+        const walker = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT);
+        let node = walker.nextNode();
+        while (node !== null && !(node.nodeValue?.includes('ABCАБя0123') ?? false)) {
+          node = walker.nextNode();
+        }
+        if (node?.nodeValue == null) return false;
+        const start = node.nodeValue.indexOf('ABCАБя0123');
+        const range = document.createRange();
+        range.setStart(node, start);
+        range.setEnd(node, start + 'ABCАБя0123'.length);
+        return range.getBoundingClientRect().width > 0;
+      }),
+    { timeout: 10_000, timeoutMsg: 'Broken local font left no readable fallback text' },
+  );
+}
+
 describe('visible font diagnostics', () => {
   it('follows Emoji-only, Text plus Emoji, precedence, and no open text surface', async () => {
     await withRoleScenario('diagnostics roles', async () => {
@@ -137,11 +181,13 @@ describe('visible font diagnostics', () => {
       await selectRole('text', 'Role Text');
       const combined = await check(['Text', 'Emoji']);
       expect(combined).toContain('Text: Role Text — Local font loaded');
-      // 1.0.3 keeps the note visible behind settings; 1.13 opens settings in a
-      // separate document. Check describes only surfaces in its own document.
-      expect(combined).toMatch(
-        /Reading text: Selected font is first in the checked stack|No matching open surface to check/,
-      );
+      // 1.0.3 shares the note document; 1.13 uses a separate settings document.
+      if (await settingsSharesNoteDocument()) {
+        expect(combined).toContain('Reading text: Selected font is first in the checked stack');
+      } else {
+        expect(combined).toContain('No matching open surface to check');
+        expect(combined).not.toContain('Reading text:');
+      }
       expect(combined).toContain('Settings label: Selected font is first in the checked stack');
       await selectRole('interface', 'Role Interface');
       await setNativeInlineFonts({ '--font-interface-override': 'Role Baseline' });
@@ -195,9 +241,13 @@ describe('visible font diagnostics', () => {
       });
       const result = await check(['Text']);
       expect(result).toContain('Text: Role Broken — Local font could not be loaded');
-      expect(result).toMatch(
-        /Reading text: Selected font is first in the checked stack|No matching open surface to check/,
-      );
+      if (await settingsSharesNoteDocument()) {
+        expect(result).toContain('Reading text: Selected font is first in the checked stack');
+      } else {
+        expect(result).toContain('No matching open surface to check');
+        expect(result).not.toContain('Reading text:');
+      }
+      await assertReadableFallback();
     });
   });
 });

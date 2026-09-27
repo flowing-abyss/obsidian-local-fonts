@@ -1132,6 +1132,10 @@ describe('LocalFontsSettingTab', () => {
   });
 
   describe('the Check button', () => {
+    beforeEach(() => {
+      document.body.appendChild(tab.containerEl);
+    });
+
     const face = (family: string, colorFormats: Array<'COLR1'> = []) => ({
       path: `.fonts/${family}.woff2`,
       format: 'woff2' as const,
@@ -1250,29 +1254,41 @@ describe('LocalFontsSettingTab', () => {
       frame.remove();
     });
 
-    it('does not write into a results target removed during loading', async () => {
-      plugin.settings.cache = { version: 2, folder: '.fonts', faces: [face('Role Text')] };
+    it('stops a pending Check after display rerenders and detaches its results ancestor', async () => {
+      plugin.settings.cache = {
+        version: 2,
+        folder: '.fonts',
+        faces: [face('Role Text'), face('Role Emoji', ['COLR1'])],
+      };
       plugin.settings.roles.text = 'Role Text';
+      plugin.settings.roles.emoji = 'Role Emoji';
       tab.display();
       const results = tab.containerEl.querySelector<HTMLElement>('.local-fonts-check-results');
       if (results === null) throw new Error('No results');
       let resolveLoad: (faces: object[]) => void = () => {};
-      Object.defineProperty(document, 'fonts', {
-        configurable: true,
-        value: {
-          load: () =>
+      const load = vi
+        .fn()
+        .mockImplementationOnce(
+          () =>
             new Promise<object[]>((resolve) => {
               resolveLoad = resolve;
             }),
-        },
+        )
+        .mockResolvedValue([{}]);
+      Object.defineProperty(document, 'fonts', {
+        configurable: true,
+        value: { load },
       });
       const pending = (
         tab as unknown as { runCheck(results: HTMLElement): Promise<void> }
       ).runCheck(results);
-      results.remove();
+      tab.display();
+      expect(results.parentElement).not.toBeNull();
+      expect(results.isConnected).toBe(false);
       resolveLoad([{}]);
       await pending;
       expect(results.textContent).not.toContain('Text:');
+      expect(load).toHaveBeenCalledTimes(1);
     });
 
     it('ignores an overlapping Check click and replaces completed results on a later click', async () => {

@@ -38,6 +38,8 @@ const SPACE = /[\t\n\f\r ]/;
 const HEX = /[\da-f]/i;
 const NEWLINE = /[\n\r\f]/;
 const UNQUOTED_CHARACTER = /[-_a-zA-Z0-9\u0080-\uffff\t\n\f\r ]/;
+const IDENT_START = /[-_a-zA-Z\u0080-\uffff]/;
+const DIGIT = /\d/;
 
 function decodedCodepoint(code: number): string {
   const valid = code > 0 && code <= 0x10ffff && (code < 0xd800 || code > 0xdfff);
@@ -85,10 +87,17 @@ function quotedFamily(value: string, start: number, mark: string): [string, numb
   return null;
 }
 
-function unquotedPart(value: string, index: number): [string, number] | null {
+function validUnquotedStart(char: string, next: string, atStart: boolean): boolean {
+  if (!atStart || SPACE.test(char)) return true;
+  if (!IDENT_START.test(char)) return false;
+  return char !== '-' || !DIGIT.test(next);
+}
+
+function unquotedPart(value: string, index: number, atStart: boolean): [string, number] | null {
   const char = value[index];
   if (char === '\\') return escapeAt(value, index);
   if (char === undefined || !UNQUOTED_CHARACTER.test(char)) return null;
+  if (!validUnquotedStart(char, value[index + 1] ?? '', atStart)) return null;
   return [char, index + 1];
 }
 
@@ -96,10 +105,12 @@ function unquotedFamily(value: string, start: number): [string, number] | null {
   if (value.slice(start, start + 2) === '??') return ['??', start + 2];
   let name = '';
   let i = start;
+  let atStart = true;
   while (i < value.length && value[i] !== ',') {
-    const part = unquotedPart(value, i);
+    const part = unquotedPart(value, i, atStart);
     if (part === null) return null;
     name += part[0];
+    if (part[0] !== '') atStart = value[i] !== '\\' && SPACE.test(value[i] ?? '');
     i = part[1];
   }
   return [name.replace(/[\t\n\f\r ]+/g, ' ').trim(), i];
