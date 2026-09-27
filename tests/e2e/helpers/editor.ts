@@ -1,8 +1,11 @@
 import { browser } from '@wdio/globals';
+import type { ActiveLeafWorkspace } from './roles.js';
 
 export async function navigateRoleEditor(pattern: string): Promise<void> {
   await browser.executeObsidian(({ app }, prefix: string) => {
-    const view = app.workspace.getLeaf(false).view as unknown as {
+    const leaf = (app.workspace as unknown as ActiveLeafWorkspace).activeLeaf;
+    if (leaf === null) throw new Error('Role editor has no active leaf');
+    const view = leaf.view as unknown as {
       editor: {
         getValue(): string;
         setCursor(position: { line: number; ch: number }): void;

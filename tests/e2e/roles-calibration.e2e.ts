@@ -2,7 +2,9 @@ import { browser, expect } from '@wdio/globals';
 import { describe, it } from 'mocha';
 import type { PluginSettings } from '../../src/settings.js';
 import { navigateRoleEditor } from './helpers/editor.js';
+import { observeNativeFocusBoundary } from './helpers/native-focus.js';
 import { waitForFixtureFonts } from './helpers/ready.js';
+import type { ActiveLeafWorkspace, RoleCleanupObservation } from './helpers/roles.js';
 import {
   measureSurface,
   openRoleNote,
@@ -127,156 +129,244 @@ describe('calibrated real font rendering', () => {
     });
   });
 
-  it('closes a newly opened pop-out when assertions fail before measurement', async function () {
-    const isDesktop = await browser.executeObsidian(
-      ({ obsidian }) => obsidian.Platform.isDesktopApp,
-    );
-    if (!isDesktop) this.skip();
-    const popoutCount = async (): Promise<number> =>
-      browser.executeObsidian(
-        ({ app }) =>
-          (
-            app.workspace as unknown as { floatingSplit: { children: Array<{ win: Window }> } }
-          ).floatingSplit.children.filter((child) => !child.win.closed).length,
-      );
-    const startingCount = await popoutCount();
-    expect(startingCount).toBe(0);
-    try {
-      await browser.executeObsidian(async ({ app }) => {
-        await app.workspace.openLinkText('Welcome.md', '', 'window');
-        const children = (
-          app.workspace as unknown as { floatingSplit: { children: Array<{ win: Window }> } }
-        ).floatingSplit.children;
-        const existing = children[children.length - 1]?.win;
-        if (existing === undefined) throw new Error('Pre-existing pop-out did not open');
-        (window as Window & { __roleExistingPopout?: Window }).__roleExistingPopout = existing;
-      });
-      await browser.waitUntil(async () => (await popoutCount()) > startingCount, {
-        timeout: 10_000,
-        timeoutMsg: 'Pre-existing pop-out was not registered',
-      });
-      const before = await popoutCount();
-      const nativeHandlesBefore = await browser.getWindowHandles();
-      const activeBefore = await browser.executeObsidian(
-        ({ app }) => (app.workspace.getLeaf(false) as unknown as { id: string }).id,
-      );
-      let failedAsExpected = false;
-      try {
-        await withRoleScenario('pop-out partial failure', async () => {
+  for (const activeRoot of ['main', 'floating'] as const)
+    for (const pinned of [false, true])
+      // eslint-disable-next-line complexity -- Native identity, selection, focus and pinned navigation are independent cleanup assertions.
+      it(`closes a newly opened pop-out and restores the ${activeRoot} active leaf, pinned ${pinned}`, async function () {
+        const isDesktop = await browser.executeObsidian(
+          ({ obsidian }) => obsidian.Platform.isDesktopApp,
+        );
+        if (!isDesktop) this.skip();
+        const popoutCount = async (): Promise<number> =>
+          browser.executeObsidian(
+            ({ app }) =>
+              (
+                app.workspace as unknown as { floatingSplit: { children: Array<{ win: Window }> } }
+              ).floatingSplit.children.filter((child) => !child.win.closed).length,
+          );
+        const startingCount = await popoutCount();
+        expect(startingCount).toBe(0);
+        try {
           await browser.executeObsidian(async ({ app }) => {
-            await app.workspace.openLinkText('Font roles.md', '', 'window');
+            await app.workspace.openLinkText('Welcome.md', '', 'window');
+            const children = (
+              app.workspace as unknown as { floatingSplit: { children: Array<{ win: Window }> } }
+            ).floatingSplit.children;
+            const existing = children[children.length - 1]?.win;
+            if (existing === undefined) throw new Error('Pre-existing pop-out did not open');
+            (window as Window & { __roleExistingPopout?: Window }).__roleExistingPopout = existing;
           });
-          await browser.waitUntil(async () => (await popoutCount()) > before, {
+          await browser.waitUntil(async () => (await popoutCount()) > startingCount, {
             timeout: 10_000,
-            timeoutMsg: 'Role pop-out did not open',
+            timeoutMsg: 'Pre-existing pop-out was not registered',
           });
-          await browser.executeObsidian(({ app }) => {
-            const workspace = app.workspace as unknown as {
-              setLayout(layout: unknown): Promise<void>;
-              floatingSplit: { children: Array<{ win: Window }> };
-            };
-            const children = workspace.floatingSplit.children;
-            const popout = children[children.length - 1]?.win;
-            if (popout === undefined) throw new Error('No opened role pop-out to observe');
-            // eslint-disable-next-line @typescript-eslint/unbound-method -- Restored by identity; invoked with .call(workspace).
-            const original = workspace.setLayout;
-            const descriptor = Object.getOwnPropertyDescriptor(workspace, 'setLayout');
-            const originalClose = popout.close.bind(popout);
+          // Registration precedes native focus on latest Obsidian. Wait for the
+          // opened window's leaf before pinning/snapshotting the pre-scenario state.
+          await browser.waitUntil(
+            async () =>
+              browser.executeObsidian(({ app }) => {
+                const existing = (window as Window & { __roleExistingPopout?: Window })
+                  .__roleExistingPopout;
+                return (
+                  (app.workspace as unknown as ActiveLeafWorkspace).activeLeaf?.view.containerEl
+                    .ownerDocument === existing?.document
+                );
+              }),
+            { timeout: 10_000, timeoutMsg: 'Pre-existing pop-out did not become the active leaf' },
+          );
+          if (activeRoot === 'main') {
+            await browser.executeObsidian(({ app }) => {
+              app.workspace.iterateAllLeaves((leaf) => {
+                if (leaf.getRoot() === app.workspace.rootSplit)
+                  app.workspace.setActiveLeaf(leaf, { focus: true });
+              });
+            });
+          }
+          const before = await popoutCount();
+          const nativeHandlesBefore = await browser.getWindowHandles();
+          const activeBefore = await browser.executeObsidian(({ app }, pin: boolean) => {
+            const leaf = (app.workspace as unknown as ActiveLeafWorkspace).activeLeaf;
+            if (leaf === null) throw new Error('Missing pre-existing active pop-out leaf');
+            leaf.setPinned(pin);
+            return (leaf as unknown as { id: string }).id;
+          }, pinned);
+          let failedAsExpected = false;
+          try {
+            await withRoleScenario('pop-out partial failure', async () => {
+              await browser.executeObsidian(async ({ app }) => {
+                await app.workspace.openLinkText('Font roles.md', '', 'window');
+              });
+              await browser.waitUntil(async () => (await popoutCount()) > before, {
+                timeout: 10_000,
+                timeoutMsg: 'Role pop-out did not open',
+              });
+              await browser.executeObsidian(({ app }) => {
+                const workspace = app.workspace as unknown as {
+                  setLayout(layout: unknown): Promise<void>;
+                  floatingSplit: { children: Array<{ win: Window }> };
+                };
+                const children = workspace.floatingSplit.children;
+                const popout = children[children.length - 1]?.win;
+                if (popout === undefined) throw new Error('No opened role pop-out to observe');
+                // eslint-disable-next-line @typescript-eslint/unbound-method -- Restored by identity; invoked with .call(workspace).
+                const original = workspace.setLayout;
+                const descriptor = Object.getOwnPropertyDescriptor(workspace, 'setLayout');
+                const originalClose = popout.close.bind(popout);
+                const owner = window as Window & {
+                  __rolePopoutWitness?: {
+                    original: typeof original;
+                    descriptor: PropertyDescriptor | undefined;
+                    originalClose: typeof originalClose;
+                    popout: Window;
+                    closeCalled: boolean;
+                    closedBeforeLayout: boolean | null;
+                  };
+                };
+                owner.__rolePopoutWitness = {
+                  original,
+                  descriptor,
+                  originalClose,
+                  popout,
+                  closeCalled: false,
+                  closedBeforeLayout: null,
+                };
+                popout.close = () => {
+                  const witness = owner.__rolePopoutWitness;
+                  if (witness !== undefined) witness.closeCalled = true;
+                  originalClose();
+                };
+                workspace.setLayout = async (layout) => {
+                  if (descriptor === undefined) Reflect.deleteProperty(workspace, 'setLayout');
+                  else Object.defineProperty(workspace, 'setLayout', descriptor);
+                  const witness = owner.__rolePopoutWitness;
+                  if (witness !== undefined) witness.closedBeforeLayout = witness.closeCalled;
+                  await original.call(workspace, layout);
+                };
+              });
+              throw new Error('deliberate assertion failure before pop-out measurement');
+            });
+          } catch (error) {
+            expect(String(error)).toContain(
+              'deliberate assertion failure before pop-out measurement',
+            );
+            failedAsExpected = true;
+          }
+          expect(failedAsExpected).toBe(true);
+          const nativeHandlesAfter = await browser.getWindowHandles();
+          nativeHandlesAfter.sort((left, right) => left.localeCompare(right));
+          nativeHandlesBefore.sort((left, right) => left.localeCompare(right));
+          expect(nativeHandlesAfter).toEqual(nativeHandlesBefore);
+          const focusBoundary = await observeNativeFocusBoundary();
+          expect(focusBoundary.before).toBe(activeBefore);
+          expect(focusBoundary.active).toBe(activeBefore);
+          for (const callback of focusBoundary.callbacks) {
+            expect(callback.active).toBe(activeBefore);
+            // Other concurrently running Obsidian instances can own OS focus.
+            // Any focused document in this workspace must belong to the saved root.
+            if (callback.focused) expect(callback.root).toBe(activeRoot);
+          }
+          const observation = await browser.executeObsidian(({ app }, pin: boolean) => {
             const owner = window as Window & {
+              __roleExistingPopout?: Window;
+              __roleCleanupObservation?: RoleCleanupObservation;
+              __rolePopoutWitness?: { closedBeforeLayout: boolean | null };
+            };
+            const observation = {
+              closedBeforeLayout: owner.__rolePopoutWitness?.closedBeforeLayout,
+              existingOpen: owner.__roleExistingPopout?.closed === false,
+              existingRegistered: (
+                app.workspace as unknown as { floatingSplit: { children: Array<{ win: Window }> } }
+              ).floatingSplit.children.some((child) => child.win === owner.__roleExistingPopout),
+              active:
+                (
+                  (app.workspace as unknown as ActiveLeafWorkspace).activeLeaf as unknown as {
+                    id: string;
+                  } | null
+                )?.id ?? null,
+              cleanup: owner.__roleCleanupObservation,
+            };
+            let unsafe: { before: string; selected: string; after: string | null } | null = null;
+            if (pin) {
+              // Deliberately exercise the old mutating oracle after read-only capture,
+              // in the same renderer task so native focus cannot intervene.
+              const before = (app.workspace as unknown as ActiveLeafWorkspace).activeLeaf;
+              if (before === null) throw new Error('Missing restored pinned leaf');
+              const selected = app.workspace.getLeaf(false);
+              unsafe = {
+                before: (before as unknown as { id: string }).id,
+                selected: (selected as unknown as { id: string }).id,
+                after:
+                  (
+                    (app.workspace as unknown as ActiveLeafWorkspace).activeLeaf as unknown as {
+                      id: string;
+                    } | null
+                  )?.id ?? null,
+              };
+              app.workspace.setActiveLeaf(before, { focus: false });
+              if (selected !== before) selected.detach();
+            }
+            return { ...observation, unsafe };
+          }, pinned);
+          expect(observation.closedBeforeLayout).toBe(true);
+          expect(observation.existingOpen).toBe(true);
+          expect(observation.existingRegistered).toBe(true);
+          expect(observation.active).toBe(activeBefore);
+          expect(observation.cleanup).toEqual({
+            savedActive: activeBefore,
+            active: activeBefore,
+            attached: true,
+            connected: true,
+            navigable: !pinned,
+            root: activeRoot,
+            windowOpen: true,
+          });
+          if (pinned) {
+            expect(observation.unsafe?.before).toBe(activeBefore);
+            expect(observation.unsafe?.selected).not.toBe(activeBefore);
+            // The official 1.0.3 getter creates/returns a replacement without
+            // selecting it; 1.13.7 also calls setActiveLeaf. Neither is an oracle.
+            expect(observation.unsafe?.after).toBe(
+              browser.getObsidianVersion() === '1.0.3'
+                ? activeBefore
+                : observation.unsafe?.selected,
+            );
+          }
+          await browser.waitUntil(async () => (await popoutCount()) === before, {
+            timeout: 10_000,
+            timeoutMsg: 'New role pop-out remained open after scenario cleanup',
+          });
+        } finally {
+          await browser.executeObsidian(({ app }) => {
+            const owner = window as Window & {
+              __roleExistingPopout?: Window;
               __rolePopoutWitness?: {
-                original: typeof original;
+                original: (layout: unknown) => Promise<void>;
                 descriptor: PropertyDescriptor | undefined;
-                originalClose: typeof originalClose;
+                originalClose: () => void;
                 popout: Window;
-                closeCalled: boolean;
-                closedBeforeLayout: boolean | null;
               };
             };
-            owner.__rolePopoutWitness = {
-              original,
-              descriptor,
-              originalClose,
-              popout,
-              closeCalled: false,
-              closedBeforeLayout: null,
-            };
-            popout.close = () => {
-              const witness = owner.__rolePopoutWitness;
-              if (witness !== undefined) witness.closeCalled = true;
-              originalClose();
-            };
-            workspace.setLayout = async (layout) => {
-              if (descriptor === undefined) Reflect.deleteProperty(workspace, 'setLayout');
-              else Object.defineProperty(workspace, 'setLayout', descriptor);
-              const witness = owner.__rolePopoutWitness;
-              if (witness !== undefined) witness.closedBeforeLayout = witness.closeCalled;
-              await original.call(workspace, layout);
-            };
+            const witness = owner.__rolePopoutWitness;
+            if (witness !== undefined) {
+              if (witness.descriptor === undefined)
+                Reflect.deleteProperty(app.workspace, 'setLayout');
+              else Object.defineProperty(app.workspace, 'setLayout', witness.descriptor);
+              if (!witness.popout.closed) witness.popout.close = witness.originalClose;
+              delete owner.__rolePopoutWitness;
+            }
+            const windows = new Set(
+              (
+                app.workspace as unknown as { floatingSplit: { children: Array<{ win: Window }> } }
+              ).floatingSplit.children.map((child) => child.win),
+            );
+            if (owner.__roleExistingPopout !== undefined) windows.add(owner.__roleExistingPopout);
+            for (const win of windows) if (!win.closed) win.close();
+            delete owner.__roleExistingPopout;
           });
-          throw new Error('deliberate assertion failure before pop-out measurement');
-        });
-      } catch (error) {
-        expect(String(error)).toContain('deliberate assertion failure before pop-out measurement');
-        failedAsExpected = true;
-      }
-      expect(failedAsExpected).toBe(true);
-      const nativeHandlesAfter = await browser.getWindowHandles();
-      nativeHandlesAfter.sort((left, right) => left.localeCompare(right));
-      nativeHandlesBefore.sort((left, right) => left.localeCompare(right));
-      expect(nativeHandlesAfter).toEqual(nativeHandlesBefore);
-      const observation = await browser.executeObsidian(({ app }) => {
-        const owner = window as Window & {
-          __roleExistingPopout?: Window;
-          __rolePopoutWitness?: { closedBeforeLayout: boolean | null };
-        };
-        return {
-          closedBeforeLayout: owner.__rolePopoutWitness?.closedBeforeLayout,
-          existingOpen: owner.__roleExistingPopout?.closed === false,
-          existingRegistered: (
-            app.workspace as unknown as { floatingSplit: { children: Array<{ win: Window }> } }
-          ).floatingSplit.children.some((child) => child.win === owner.__roleExistingPopout),
-          active: (app.workspace.getLeaf(false) as unknown as { id: string }).id,
-        };
-      });
-      expect(observation.closedBeforeLayout).toBe(true);
-      expect(observation.existingOpen).toBe(true);
-      expect(observation.existingRegistered).toBe(true);
-      expect(observation.active).toBe(activeBefore);
-      await browser.waitUntil(async () => (await popoutCount()) === before, {
-        timeout: 10_000,
-        timeoutMsg: 'New role pop-out remained open after scenario cleanup',
-      });
-    } finally {
-      await browser.executeObsidian(({ app }) => {
-        const owner = window as Window & {
-          __roleExistingPopout?: Window;
-          __rolePopoutWitness?: {
-            original: (layout: unknown) => Promise<void>;
-            descriptor: PropertyDescriptor | undefined;
-            originalClose: () => void;
-            popout: Window;
-          };
-        };
-        const witness = owner.__rolePopoutWitness;
-        if (witness !== undefined) {
-          if (witness.descriptor === undefined) Reflect.deleteProperty(app.workspace, 'setLayout');
-          else Object.defineProperty(app.workspace, 'setLayout', witness.descriptor);
-          if (!witness.popout.closed) witness.popout.close = witness.originalClose;
-          delete owner.__rolePopoutWitness;
         }
-        const windows = new Set(
-          (
-            app.workspace as unknown as { floatingSplit: { children: Array<{ win: Window }> } }
-          ).floatingSplit.children.map((child) => child.win),
-        );
-        if (owner.__roleExistingPopout !== undefined) windows.add(owner.__roleExistingPopout);
-        for (const win of windows) if (!win.closed) win.close();
-        delete owner.__roleExistingPopout;
+        await browser.waitUntil(async () => (await popoutCount()) === startingCount, {
+          timeout: 10_000,
+          timeoutMsg: 'Pre-existing test pop-out remained open after test cleanup',
+        });
       });
-    }
-    await browser.waitUntil(async () => (await popoutCount()) === startingCount, {
-      timeout: 10_000,
-      timeoutMsg: 'Pre-existing test pop-out remained open after test cleanup',
-    });
-  });
 });

@@ -151,3 +151,53 @@ describe('hard role boundaries', () => {
     expect(selectors).not.toContain('.inline-title');
   });
 });
+
+// Real editor tokens carry heading and inline-code classes simultaneously.
+it('excludes list-heading inline code from the Hard Headings selector', () => {
+  const root = new DOMParser().parseFromString(
+    '<div class="markdown-source-view"><div class="HyperMD-list-line"><span class="cm-header-3">Heading</span><span class="cm-header-3 cm-inline-code">Code</span></div></div>',
+    'text/html',
+  );
+  const sheet = new CSSStyleSheet();
+  sheet.replaceSync(
+    buildRoleCss({
+      roles: { ...DEFAULT_SETTINGS.roles, headings: 'Role Headings' },
+      hardOverride: true,
+      emojiAlias: 'Emoji',
+    }),
+  );
+  const hard = Array.from(sheet.cssRules).find(
+    (rule): rule is CSSStyleRule =>
+      rule instanceof CSSStyleRule && rule.style.getPropertyPriority('font-family') === 'important',
+  );
+  expect(hard).toBeDefined();
+  expect(root.querySelectorAll(hard?.selectorText ?? '')).toHaveLength(1);
+  expect(root.querySelector(hard?.selectorText ?? '')?.textContent).toBe('Heading');
+});
+
+for (const emojiAlias of [null, 'Emoji'])
+  it(`routes native list-heading font variables through Monospace only on code, Emoji ${emojiAlias}`, () => {
+    const root = new DOMParser().parseFromString(
+      '<div class="markdown-source-view"><div class="HyperMD-list-line"><span class="cm-header-3">Heading</span><span class="cm-header-3 cm-inline-code">Code</span></div><span class="cm-inline-code">Other code</span></div>',
+      'text/html',
+    );
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(
+      buildRoleCss({
+        roles: { ...DEFAULT_SETTINGS.roles, headings: 'Role Headings' },
+        hardOverride: false,
+        emojiAlias,
+      }),
+    );
+    const boundary = Array.from(sheet.cssRules).find(
+      (rule): rule is CSSStyleRule =>
+        rule instanceof CSSStyleRule &&
+        rule.style.getPropertyValue('--h3-font') === 'var(--font-monospace)',
+    );
+    expect(boundary).toBeDefined();
+    expect(root.querySelectorAll(boundary?.selectorText ?? '')).toHaveLength(1);
+    expect(root.querySelector(boundary?.selectorText ?? '')?.textContent).toBe('Code');
+    expect(boundary?.style.getPropertyValue('font-family')).toBe('');
+    for (const level of [1, 2, 3, 4, 5, 6])
+      expect(boundary?.style.getPropertyValue(`--h${level}-font`)).toBe('var(--font-monospace)');
+  });

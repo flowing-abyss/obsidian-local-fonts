@@ -1,4 +1,5 @@
 import { browser } from '@wdio/globals';
+import type { WorkspaceLeaf } from 'obsidian';
 import { quote } from '../../../src/fonts/family.js';
 import type { PluginSettings, RoleAssignments } from '../../../src/settings.js';
 import { captureRoleFailure } from './evidence.js';
@@ -31,6 +32,22 @@ export const ROLE_FAMILIES: RoleAssignments = {
   headings: 'Role Headings',
   emoji: 'Role Emoji A',
 };
+
+// The public field is discouraged for navigation, but it is the read-only
+// selection observation required here. getLeaf(false) can create/select a leaf.
+export interface ActiveLeafWorkspace {
+  readonly activeLeaf: WorkspaceLeaf | null;
+}
+
+export interface RoleCleanupObservation {
+  savedActive: string | null;
+  active: string | null;
+  attached: boolean;
+  connected: boolean;
+  navigable: boolean;
+  root: 'floating' | 'main' | 'other';
+  windowOpen: boolean;
+}
 
 interface RoleState {
   settings: PluginSettings;
@@ -120,8 +137,12 @@ async function beginRoleScenario(): Promise<void> {
 }
 
 async function endRoleScenario(): Promise<void> {
+  // eslint-disable-next-line complexity -- Self-contained renderer cleanup also snapshots the native restoration boundary.
   await browser.executeObsidian(async ({ app }) => {
-    const testWindow = window as Window & { __roleScenario?: RoleState };
+    const testWindow = window as Window & {
+      __roleScenario?: RoleState;
+      __roleCleanupObservation?: RoleCleanupObservation;
+    };
     const state = testWindow.__roleScenario;
     if (state === undefined) return;
     const errors: unknown[] = [];
@@ -200,15 +221,46 @@ async function endRoleScenario(): Promise<void> {
         if (typeof active === 'string') {
           workspace.iterateAllLeaves((leaf) => {
             if ((leaf as unknown as { id: string }).id === active)
-              workspace.setActiveLeaf(leaf, { focus: false });
+              // Native container onFocus checks its focused document after 100 ms.
+              // Restore focus as well as selection so that callback cannot select
+              // another container's most recent leaf after cleanup returns.
+              workspace.setActiveLeaf(leaf, { focus: true });
           });
         }
       });
     } finally {
+      // Read activeLeaf directly. getLeaf(false) can select/create a different leaf
+      // when this leaf is pinned or its view cannot navigate.
+      // https://docs.obsidian.md/Reference/TypeScript+API/Workspace/activeLeaf
+      const workspace = app.workspace as Omit<typeof app.workspace, 'activeLeaf'> &
+        ActiveLeafWorkspace & {
+          isAttached(leaf: unknown): boolean;
+          floatingSplit: unknown;
+        };
+      const active = workspace.activeLeaf as
+        | (NonNullable<typeof workspace.activeLeaf> & {
+            id: string;
+            containerEl: HTMLElement;
+            canNavigate(): boolean;
+          })
+        | null;
+      let root: RoleCleanupObservation['root'] = 'other';
+      if (active?.getRoot() === workspace.floatingSplit) root = 'floating';
+      if (active?.getRoot() === workspace.rootSplit) root = 'main';
+      testWindow.__roleCleanupObservation = {
+        savedActive: (state.layout as { active?: string }).active ?? null,
+        active: active?.id ?? null,
+        attached: workspace.isAttached(active),
+        connected: active?.containerEl.isConnected ?? false,
+        navigable: active?.canNavigate() ?? false,
+        root,
+        windowOpen: active?.containerEl.ownerDocument.defaultView?.closed === false,
+      };
       delete testWindow.__roleScenario;
     }
     if (errors.length > 0)
       throw new Error(`Role scenario cleanup failed: ${errors.map(String).join('; ')}`);
+    return testWindow.__roleCleanupObservation;
   });
 }
 
@@ -233,7 +285,8 @@ export async function openRoleNote(mode: NoteMode): Promise<void> {
     const state = (window as Window & { __roleScenario?: RoleState }).__roleScenario;
     if (state === undefined) throw new Error('No role scenario is active');
     await app.workspace.openLinkText('Role title ABCАБя0123 😀 ☀️ 👩‍💻.md', '', true);
-    const leaf = app.workspace.getLeaf(false);
+    const leaf = (app.workspace as unknown as ActiveLeafWorkspace).activeLeaf;
+    if (leaf === null) throw new Error('Opened role note has no active leaf');
     state.leaves.push(leaf);
     const viewState = leaf.getViewState();
     await leaf.setViewState({

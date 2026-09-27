@@ -124,7 +124,7 @@ const HARD_HEADINGS = [
   ...[1, 2, 3, 4, 5, 6].flatMap((level) => [
     `.markdown-preview-view h${level}`,
     `.markdown-source-view .HyperMD-header-${level}`,
-    `.markdown-source-view .HyperMD-list-line .cm-header-${level}`,
+    `.markdown-source-view .HyperMD-list-line .cm-header-${level}:not(.cm-inline-code)`,
   ]),
   '.workspace-leaf-content[data-type="markdown"] .inline-title',
 ];
@@ -194,6 +194,18 @@ export function buildRoleCss({ roles, hardOverride, emojiAlias }: RoleCssInput):
     );
     composed.push('  font-family: var(--font-interface);');
     blocks.push(`${ROLE_SCOPE} > * {\n${composed.join('\n')}\n}`);
+  }
+  if (roles.headings !== null) {
+    // Obsidian 1.0.3 declares list-heading font-family after its equally specific
+    // code rule. Correct the variable consumed by that native rule on code only;
+    // do not outrank a theme's own code font-family or native Appearance tiers.
+    // Custom properties resolve on the consuming element (CSS Variables §3):
+    // https://www.w3.org/TR/css-variables-1/#using-variables
+    blocks.push(
+      `.markdown-source-view .HyperMD-list-line .cm-inline-code {\n${HEADING_VARIABLES.map(
+        (property) => `  ${property}: var(--font-monospace);`,
+      ).join('\n')}\n}`,
+    );
   }
   if (hardOverride) {
     const hard = buildHardOverrides(roles, emojiAlias);

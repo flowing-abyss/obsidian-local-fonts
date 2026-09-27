@@ -492,10 +492,10 @@ describe('buildCss', () => {
     const sheet = new CSSStyleSheet();
     sheet.replaceSync(css);
 
-    // 3 @font-face + 2 body/child + 4 hard-override groups = 9 top-level
-    // rules. If any block had a syntax error, the parser would drop that rule (or
+    // 3 @font-face + 2 body/child + 4 hard-override groups + 1 code boundary
+    // = 10 top-level rules. If any block had a syntax error, the parser would drop that rule (or
     // everything after it in a pathological case) and this count would come up short.
-    expect(sheet.cssRules).toHaveLength(9);
+    expect(sheet.cssRules).toHaveLength(10);
     const cssText: string = Array.from(sheet.cssRules, (rule: CSSRule) => rule.cssText).join('\n');
     expect(cssText).toContain('@font-face');
     expect(cssText).toContain('!important');
