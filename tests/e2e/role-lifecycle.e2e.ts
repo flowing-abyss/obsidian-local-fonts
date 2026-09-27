@@ -54,8 +54,8 @@ describe('role assignment lifecycle', () => {
             ordinary,
             role === 'interface' ? (value ?? 'Role Baseline') : 'Role Baseline',
           );
-          if (role === 'emoji' && value !== null)
-            await matches('.markdown-preview-view p', emoji, value);
+          if (role === 'emoji')
+            await matches('.markdown-preview-view p', emoji, value ?? 'Role Baseline');
         }
       }
     });
@@ -111,17 +111,30 @@ describe('role assignment lifecycle', () => {
     await withRoleScenario('hard boundaries', async () => {
       await openRoleNote('reading');
       await setNativeTestCss(
-        "body { --font-text-theme:'Role Baseline'; --font-interface-theme:'Role Baseline'; --font-monospace-theme:'Role Baseline'; } .markdown-preview-view, .markdown-source-view, .suggestion-container { font-family:'Role Baseline'; } .role-test-icon { font-family:'Role Mono'; } .role-dialog-heading { font-family:'Role Baseline'; }",
+        "body { --font-text-theme:'Role Baseline'; --font-interface-theme:'Role Baseline'; --font-monospace-theme:'Role Baseline'; } .markdown-preview-view, .markdown-source-view, .suggestion-container { font-family:'Role Baseline'; } .role-test-icon { font-family:'Role Mono'; } .markdown-preview-view h2.role-explicit-note-heading { font-family:'Role Headings'; } .role-dialog-heading { font-family:'Role Baseline'; }",
       );
       await browser.executeObsidian((_, sample: string) => {
         const p = document.querySelector('.markdown-preview-view p');
         if (p === null) throw new Error('Missing role paragraph');
         const icon = p.createSpan({ cls: 'svg-icon role-test-icon' });
         icon.textContent = sample;
+        const heading = document.querySelector('.markdown-preview-view h2');
+        if (heading === null) throw new Error('Missing note heading');
+        heading.classList.add('role-explicit-note-heading');
       }, ordinary);
+      await matches(
+        '.markdown-preview-view h2.role-explicit-note-heading',
+        ordinary,
+        'Role Headings',
+      );
       await applyRoles({ ...EMPTY_ROLES, text: 'Role Text' }, true);
       await matches('.markdown-preview-view p', ordinary, 'Role Text');
       await matches('.markdown-preview-view p code', ordinary, 'Role Baseline');
+      await matches(
+        '.markdown-preview-view h2.role-explicit-note-heading',
+        ordinary,
+        'Role Headings',
+      );
       await matches('.role-test-icon', ordinary, 'Role Mono');
       for (const hard of [false, true]) {
         await applyRoles({ ...EMPTY_ROLES, emoji: 'Role Emoji A' }, hard);
