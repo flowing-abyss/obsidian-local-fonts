@@ -6,11 +6,18 @@ on:
   pull_request:
     branches: ['**']
   workflow_dispatch:
+    inputs:
+      native_window_diagnostics:
+        description: 'Diagnose floor-version native window tests with command logs'
+        type: boolean
+        default: false
 
 permissions: {}
 
 jobs:
   desktop:
+    env:
+      OBSIDIAN_VERSIONS: ${{ inputs.native_window_diagnostics && 'earliest/earliest' || 'earliest/earliest latest/latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -65,19 +72,31 @@ jobs:
           sleep 1
 
       - name: Run e2e tests
+        if: ${{ !inputs.native_window_diagnostics }}
         run: pnpm run test:e2e
         env:
           # macOS GitHub runners are lower-memory; keep desktop instances modest everywhere.
           WDIO_MAX_INSTANCES: 2
 
-      - name: Upload failure evidence
-        if: failure()
+      - name: Diagnose floor native windows
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.native_window_diagnostics }}
+        run: >-
+          pnpm exec wdio run tests/e2e/wdio.conf.mts
+          --spec tests/e2e/role-documents.e2e.ts
+          --spec tests/e2e/roles-calibration.e2e.ts
+          --logLevel debug
+        env:
+          WDIO_MAX_INSTANCES: 2
+
+      - name: Upload test evidence
+        if: ${{ failure() || inputs.native_window_diagnostics }}
         uses: actions/upload-artifact@v7
         with:
           name: e2e-desktop-${{ matrix.os }}
           path: tests/e2e/wdio-logs/
 
   android:
+    if: ${{ !inputs.native_window_diagnostics }}
     strategy:
       fail-fast: false
       matrix:
@@ -155,7 +174,7 @@ jobs:
           path: tests/e2e/wdio-logs/
 
   check:
-    if: always()
+    if: ${{ always() && !inputs.native_window_diagnostics }}
     needs: [desktop, android]
     runs-on: ubuntu-latest
     permissions: {}
