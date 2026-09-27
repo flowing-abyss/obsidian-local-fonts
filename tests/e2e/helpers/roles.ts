@@ -52,6 +52,8 @@ export interface RoleCleanupObservation {
 
 interface NativeRoleWindow {
   isDestroyed(): boolean;
+  isFocused(): boolean;
+  isVisible(): boolean;
   show(): void;
   once(event: 'closed', callback: () => void): void;
   removeListener(event: 'closed', callback: () => void): void;
@@ -62,6 +64,7 @@ interface ElectronRoleWindow extends Window {
 }
 
 interface RoleState {
+  cleanupTrace?: Array<Record<string, unknown>>;
   settings: PluginSettings;
   layout: unknown;
   bodyStyle: string | null;
@@ -154,11 +157,37 @@ async function endRoleScenario(): Promise<void> {
     const testWindow = window as Window & {
       __roleScenario?: RoleState;
       __roleCleanupObservation?: RoleCleanupObservation;
+      __roleCleanupTrace?: Array<Record<string, unknown>>;
     };
     const state = testWindow.__roleScenario;
     if (state === undefined) return;
     const errors: unknown[] = [];
     const nativeTransitions: RoleCleanupObservation['nativeTransitions'] = [];
+    // Keep the first attempt's stages if WebDriver retries a timed-out command.
+    const trace = (state.cleanupTrace ??= []);
+    const reentered = trace.length > 0;
+    testWindow.__roleCleanupTrace = trace;
+    const record = (stage: string, details: Record<string, unknown> = {}): void => {
+      if (trace.length >= 40) return;
+      try {
+        const workspace = app.workspace as unknown as ActiveLeafWorkspace & {
+          floatingSplit?: { children: Array<{ win: Window }> };
+        };
+        trace.push({
+          stage,
+          time: Date.now(),
+          active: (workspace.activeLeaf as unknown as { id: string } | null)?.id ?? null,
+          mainFocused: document.hasFocus(),
+          floatingFocused: (workspace.floatingSplit?.children ?? []).map(
+            ({ win }) => !win.closed && win.document.hasFocus(),
+          ),
+          ...details,
+        });
+      } catch (error) {
+        trace.push({ stage, time: Date.now(), probeError: String(error) });
+      }
+    };
+    record(reentered ? 'command reentered' : 'started');
     const nativeWindow = (win: Window): NativeRoleWindow | null =>
       (window as unknown as ElectronRoleWindow).electron.remote.BrowserWindow.fromId(
         (win as ElectronRoleWindow).electronWindow.id,
@@ -181,6 +210,7 @@ async function endRoleScenario(): Promise<void> {
       // Failure-only deadline, below the existing 60s case budget. Success still
       // requires the native event/observed state, never elapsed time.
       const deadline = window.setTimeout(() => {
+        record(`native ${operation} deadline`);
         fail(new Error(`Timed out waiting for native ${operation}`));
       }, 10_000);
       try {
@@ -197,6 +227,7 @@ async function endRoleScenario(): Promise<void> {
       const native = nativeWindow(win);
       if (native === null || native.isDestroyed()) return;
       const started = performance.now();
+      record('close requested', { nativeId: (win as ElectronRoleWindow).electronWindow.id });
       await awaitNativeEvent('close', {
         subscribe(complete) {
           native.once('closed', complete);
@@ -209,6 +240,7 @@ async function endRoleScenario(): Promise<void> {
         },
         isComplete: () => native.isDestroyed(),
       });
+      record('native closed');
       nativeTransitions.push({
         operation: 'closed',
         durationMs: performance.now() - started,
@@ -219,6 +251,12 @@ async function endRoleScenario(): Promise<void> {
       const native = nativeWindow(win);
       if (native === null) throw new Error('Restored native window disappeared');
       const started = performance.now();
+      record('focus requested', {
+        nativeId: (win as ElectronRoleWindow).electronWindow.id,
+        nativeFocused: native.isFocused(),
+        nativeVisible: native.isVisible(),
+        targetDocumentFocused: win.document.hasFocus(),
+      });
       await awaitNativeEvent('focus', {
         subscribe(complete) {
           win.addEventListener('focus', complete);
@@ -232,8 +270,17 @@ async function endRoleScenario(): Promise<void> {
           // event/document state below establishes completion.
           // https://www.electronjs.org/docs/latest/api/browser-window#winshow
           native.show();
+          record('show returned', {
+            nativeFocused: native.isFocused(),
+            nativeVisible: native.isVisible(),
+            targetDocumentFocused: win.document.hasFocus(),
+          });
         },
         isComplete: () => win.document.hasFocus(),
+      });
+      record('native focused', {
+        nativeFocused: native.isFocused(),
+        targetDocumentFocused: win.document.hasFocus(),
       });
       nativeTransitions.push({
         operation: 'focused',
@@ -272,6 +319,7 @@ async function endRoleScenario(): Promise<void> {
         // actual closed event before layout/focus restoration (Electron docs):
         // https://www.electronjs.org/docs/latest/api/browser-window#event-closed
         await clean(() => closeNative(child.win));
+      record('detach leaves');
       for (const leaf of state.leaves)
         await clean(() => {
           leaf.detach();
@@ -288,7 +336,9 @@ async function endRoleScenario(): Promise<void> {
       ).plugins['local-fonts'];
       if (plugin !== undefined) {
         plugin.settings = state.settings;
+        record('save settings');
         await clean(() => plugin.saveSettings());
+        record('settings saved');
         await clean(() => {
           plugin.applyFonts();
         });
@@ -298,8 +348,10 @@ async function endRoleScenario(): Promise<void> {
           setLayout(layout: unknown): Promise<void>;
           floatingSplit: unknown;
         };
+        record('set layout', { preservedWindows: state.initialWindows.length });
         if (state.initialWindows.length === 0) {
           await workspace.setLayout(state.layout);
+          record('layout restored');
           return;
         }
         // setLayout deserializes every saved floating window, even when its
@@ -312,6 +364,7 @@ async function endRoleScenario(): Promise<void> {
         } finally {
           workspace.floatingSplit = floating;
         }
+        record('layout restored');
         const active = layout['active'];
         if (typeof active === 'string') {
           const savedLeaves: WorkspaceLeaf[] = [];
@@ -328,6 +381,7 @@ async function endRoleScenario(): Promise<void> {
           // Commit selection after native activation, which can itself dispatch
           // Obsidian focus handlers while the promise is pending.
           workspace.setActiveLeaf(leaf, { focus: true });
+          record('selection restored');
         }
       });
     } finally {
@@ -360,6 +414,7 @@ async function endRoleScenario(): Promise<void> {
         nativeTransitions,
       };
       delete testWindow.__roleScenario;
+      record('finished');
     }
     // WebDriver retries rejected execute commands. Return the completed cleanup
     // result, then propagate its failure in Node so a retry cannot hide it.
@@ -367,6 +422,7 @@ async function endRoleScenario(): Promise<void> {
     // protocol response even when the execute command itself succeeded.
     return {
       observation: testWindow.__roleCleanupObservation,
+      trace,
       cleanupError:
         errors.length > 0 ? `Role scenario cleanup failed: ${errors.map(String).join('; ')}` : null,
     };

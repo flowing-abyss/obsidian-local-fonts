@@ -150,13 +150,15 @@ describe('calibrated real font rendering', () => {
           ({ obsidian }) => obsidian.Platform.isDesktopApp,
         );
         if (!isDesktop) this.skip();
-        const popoutCount = async (): Promise<number> =>
-          browser.executeObsidian(
-            ({ app }) =>
-              (
-                app.workspace as unknown as { floatingSplit: { children: Array<{ win: Window }> } }
-              ).floatingSplit.children.filter((child) => !child.win.closed).length,
-          );
+        const popoutCount = async (): Promise<number> => {
+          const observed = await browser.executeObsidian(({ app }) => ({
+            count: (
+              app.workspace as unknown as { floatingSplit: { children: Array<{ win: Window }> } }
+            ).floatingSplit.children.filter((child) => !child.win.closed).length,
+            cleanupTrace: (window as Window & { __roleCleanupTrace?: unknown }).__roleCleanupTrace,
+          }));
+          return observed.count;
+        };
         const startingCount = await popoutCount();
         expect(startingCount).toBe(0);
         try {
