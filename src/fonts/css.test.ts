@@ -35,6 +35,31 @@ describe('buildCss', () => {
     for (const role of ['interface', 'text', 'monospace']) expect(css).toContain(`--font-${role}:`);
     expect(css).not.toContain('!important');
   });
+  it('omits Emoji composition when the selected family has no cached face', () => {
+    const css = buildCss({
+      faces: [face({ family: 'Role Baseline' })],
+      roles: { ...DEFAULT_SETTINGS.roles, emoji: 'Role Emoji Missing' },
+      hardOverride: true,
+      resolve,
+    });
+    expect(css).not.toContain('__local-fonts-emoji__');
+    expect(css).not.toContain('--local-fonts-base-');
+    expect(css).not.toContain('Role Emoji Missing');
+  });
+
+  it('keeps a valid native fallback when a registered Emoji file later fails to load', () => {
+    const css = buildCss({
+      faces: [face({ family: 'Role Emoji Missing', path: '.fonts/no-such-file.woff2' })],
+      roles: { ...DEFAULT_SETTINGS.roles, emoji: 'Role Emoji Missing' },
+      hardOverride: false,
+      resolve,
+    });
+    expect(css).toContain("font-family: '__local-fonts-emoji__'");
+    expect(css).toContain(
+      "--font-text: '__local-fonts-emoji__', var(--local-fonts-base-font-text);",
+    );
+    expect(css).toContain("src: url('app://local/vault/.fonts/no-such-file.woff2')");
+  });
   it('emits a @font-face per selected file, using a resource URL rather than base64', () => {
     const css = buildCss({
       faces: [face({})],
@@ -350,7 +375,7 @@ describe('buildCss', () => {
     expect(css).toContain('!important');
   });
 
-  it('never applies hard override to icon elements, which would replace the icon font', () => {
+  it('leaves independently styled icons outside hard role rules', () => {
     const css = buildCss({
       faces: [face({})],
       roles: { ...DEFAULT_SETTINGS.roles, text: 'Probe Sans' },
@@ -365,20 +390,13 @@ describe('buildCss', () => {
       (rule): rule is CSSStyleRule => rule instanceof CSSStyleRule,
     );
 
-    // The container rule (`html body { font-family: ... !important }`) must carry no
-    // `:not(.svg-icon)` compound: a compound `:not()` on the container itself never
-    // excludes anything (`body` is never `.svg-icon`), so keeping it would look like
-    // protection while doing nothing — worse than no exclusion at all.
-    const container = styleRules.find((rule) => rule.selectorText === 'html body');
-    expect(container).toBeDefined();
-    expect(container?.selectorText).not.toContain(':not(.svg-icon)');
-
-    // What actually protects icons is a dedicated reset rule that runs last in source
-    // order and hands `font-family` back to whatever the icon's own rule declares.
-    const reset = styleRules.find((rule) => rule.selectorText.includes('.svg-icon'));
-    expect(reset).toBeDefined();
-    expect(reset?.style.getPropertyValue('font-family')).toBe('revert');
-    expect(reset?.style.getPropertyPriority('font-family')).toBe('important');
+    const hard = styleRules.filter(
+      (rule) => rule.style.getPropertyPriority('font-family') === 'important',
+    );
+    expect(hard).toHaveLength(1);
+    expect(hard[0]?.selectorText).toContain('.markdown-preview-view');
+    expect(hard[0]?.selectorText).not.toContain('.svg-icon');
+    expect(css).not.toContain('font-family: revert');
   });
 
   it('escapes a family name containing a quote, so one bad font cannot break the sheet', () => {
@@ -474,10 +492,10 @@ describe('buildCss', () => {
     const sheet = new CSSStyleSheet();
     sheet.replaceSync(css);
 
-    // 3 @font-face + 2 body/child + 4 hard-override groups + 1 icon reset = 10 top-level
+    // 3 @font-face + 2 body/child + 4 hard-override groups = 9 top-level
     // rules. If any block had a syntax error, the parser would drop that rule (or
     // everything after it in a pathological case) and this count would come up short.
-    expect(sheet.cssRules).toHaveLength(10);
+    expect(sheet.cssRules).toHaveLength(9);
     const cssText: string = Array.from(sheet.cssRules, (rule: CSSRule) => rule.cssText).join('\n');
     expect(cssText).toContain('@font-face');
     expect(cssText).toContain('!important');
@@ -538,15 +556,15 @@ describe('buildCss', () => {
 
     // Reading view: real heading elements.
     for (const tag of ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']) {
-      expect(selectors).toContain(tag);
+      expect(selectors).toContain(`.markdown-preview-view ${tag}`);
     }
     // Live Preview never renders headings as h1..h6 — it marks the `.cm-line` div
     // with `.HyperMD-header-N`, and the note title (which Obsidian treats as a
     // heading) is `.inline-title`. Verified against a running app's own app.css.
     for (const n of [1, 2, 3, 4, 5, 6]) {
-      expect(selectors).toContain(`.HyperMD-header-${n}`);
+      expect(selectors).toContain(`.markdown-source-view .HyperMD-header-${n}`);
     }
-    expect(selectors).toContain('.inline-title');
+    expect(selectors).toContain('.workspace-leaf-content[data-type="markdown"] .inline-title');
   });
 
   it('never emits a CSS-wide keyword as one item in a font-family list', () => {

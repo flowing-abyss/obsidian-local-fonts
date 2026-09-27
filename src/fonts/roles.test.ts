@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { RoleAssignments } from '../settings.js';
+import { DEFAULT_SETTINGS } from '../settings.js';
 import { buildCss } from './css.js';
 import { buildRoleCss } from './roles.js';
 import type { FaceRecord } from './types.js';
@@ -113,4 +114,40 @@ it('captures every native tier and derivative on the ancestor with no invented f
   }
   expect(child?.split('\n').filter((line) => line.trim().startsWith('--'))).toHaveLength(20);
   expect(css).not.toContain('!important');
+});
+
+describe('hard role boundaries', () => {
+  it('does not reset independently styled icons', () => {
+    const css = buildRoleCss({
+      roles: { ...DEFAULT_SETTINGS.roles, text: 'Role Text' },
+      hardOverride: true,
+      emojiAlias: null,
+    });
+    expect(css).not.toContain('.svg-icon');
+    expect(css).not.toContain('font-family: revert');
+  });
+
+  it('limits heading rules to note headings and the markdown title', () => {
+    const css = buildRoleCss({
+      roles: { ...DEFAULT_SETTINGS.roles, headings: 'Role Headings' },
+      hardOverride: true,
+      emojiAlias: null,
+    });
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(css);
+    const hard = Array.from(sheet.cssRules).filter(
+      (rule): rule is CSSStyleRule =>
+        rule instanceof CSSStyleRule &&
+        rule.style.getPropertyPriority('font-family') === 'important',
+    );
+    expect(hard).toHaveLength(1);
+    const headingRule = hard[0];
+    if (headingRule === undefined) throw new Error('Missing hard heading rule');
+    const selectors = headingRule.selectorText.split(',').map((selector) => selector.trim());
+    expect(selectors).toContain('.markdown-preview-view h1');
+    expect(selectors).toContain('.markdown-source-view .HyperMD-header-1');
+    expect(selectors).toContain('.workspace-leaf-content[data-type="markdown"] .inline-title');
+    expect(selectors).not.toContain('h1');
+    expect(selectors).not.toContain('.inline-title');
+  });
 });

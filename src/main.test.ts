@@ -367,6 +367,87 @@ describe('LocalFontsPlugin', () => {
     expect(styleEl.textContent).toBe(MARKER_CSS);
   });
 
+  it('restores Emoji-only CSS from cache across repeated application, style replacement, and reload', async () => {
+    const cached = {
+      folder: '.fonts',
+      roles: { ...DEFAULT_SETTINGS.roles, emoji: 'Role Emoji A' },
+      hardOverride: true,
+      cache: {
+        version: 1,
+        folder: '.fonts',
+        faces: [
+          {
+            path: '.fonts/emoji.ttf',
+            format: 'ttf',
+            size: 1,
+            mtime: 1,
+            family: 'Role Emoji A',
+            weight: 400,
+            italic: false,
+            colorFormats: [],
+            scripts: [],
+            axes: [],
+            license: null,
+            source: 'name-table',
+          },
+        ],
+      },
+    };
+    vi.spyOn(plugin, 'loadData').mockResolvedValue(cached);
+    const readBinary = vi.spyOn(plugin.app.vault.adapter, 'readBinary');
+    await plugin.onload();
+    expect(readBinary).not.toHaveBeenCalled();
+    const first = styleEl.textContent;
+    expect(first).toContain('unicode-range:');
+    expect(first).toContain('--local-fonts-base-font-text');
+    expect(first).not.toContain('!important');
+    for (let repeat = 0; repeat < 10; repeat++) plugin.applyFonts();
+    expect(styleEl.textContent).toBe(first);
+    expect(JSON.stringify(plugin.settings.cache)).not.toMatch(
+      /__local-fonts-emoji__|app:\/\/|selectedFace/,
+    );
+
+    styleEl.remove();
+    const replacement = installPluginStyles();
+    const restarted = createPlugin();
+    try {
+      await vi.waitFor(() => {
+        expect(replacement.textContent).toContain('unicode-range:');
+      });
+      expect(replacement.textContent).toContain('--local-fonts-base-font-text');
+      replacement.textContent = MARKER_CSS;
+      await vi.waitFor(() => {
+        expect(replacement.textContent).toContain('unicode-range:');
+      });
+      plugin.onunload();
+      expect(replacement.textContent).toBe(MARKER_CSS);
+      replacement.textContent = `${MARKER_CSS}\n.reloaded { color: red; }`;
+      await Promise.resolve();
+      expect(replacement.textContent).not.toContain('unicode-range:');
+
+      vi.spyOn(restarted, 'loadData').mockResolvedValue(cached);
+      await restarted.onload();
+      expect(replacement.textContent).toContain('unicode-range:');
+      expect(replacement.textContent).toContain('--local-fonts-base-font-text');
+    } finally {
+      restarted.onunload();
+      replacement.remove();
+      document.head.append(styleEl);
+    }
+  });
+
+  it('does not inject a delayed Emoji stylesheet after unload', async () => {
+    vi.spyOn(plugin, 'loadData').mockResolvedValue({
+      roles: { ...DEFAULT_SETTINGS.roles, emoji: 'Role Emoji A' },
+    });
+    styleEl.remove();
+    await plugin.onload();
+    plugin.onunload();
+    document.head.append(styleEl);
+    await Promise.resolve();
+    expect(styleEl.textContent).toBe(MARKER_CSS);
+  });
+
   it('logs rather than throws when the plugin stylesheet never turns up', async () => {
     styleEl.remove();
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);

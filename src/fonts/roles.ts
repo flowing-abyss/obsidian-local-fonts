@@ -105,56 +105,53 @@ function buildDeclarations(roles: RoleAssignments): string[] {
   return declarations;
 }
 
-/**
- * `!important` rules for themes that hardcode font-family.
- *
- * The container selectors below carry no icon exclusion: a compound `:not(.svg-icon)`
- * on the container itself (e.g. `body:not(.svg-icon)`) never excludes anything, because
- * `body` is never `.svg-icon` — it only blocks the rule from matching an icon element
- * directly, while the forced `font-family` still *inherits* into every descendant,
- * icons included, regardless of any `:not()` on the ancestor. The one thing that
- * actually protects icons is the explicit reset rule appended at the end: it runs last
- * in source order, so it wins the cascade against the rules above without needing
- * excess specificity, and `font-family: revert` hands inheritance back to whatever the
- * icon font's own rule (or the theme) declares.
- */
+const HARD_TEXT = ['.markdown-preview-view', '.markdown-source-view'];
+const HARD_INTERFACE = [
+  ROLE_SCOPE,
+  `${ROLE_SCOPE} > *`,
+  '.workspace-ribbon',
+  '.workspace-tab-header',
+  '.view-header',
+  '.nav-files-container',
+  '.modal',
+  '.suggestion-container',
+  '.suggestion-item',
+  '.setting-item-name',
+  '.setting-item-description',
+];
+const HARD_MONOSPACE = ['code', 'pre', '.cm-inline-code', '.cm-line.HyperMD-codeblock'];
+const HARD_HEADINGS = [
+  ...[1, 2, 3, 4, 5, 6].flatMap((level) => [
+    `.markdown-preview-view h${level}`,
+    `.markdown-source-view .HyperMD-header-${level}`,
+    `.markdown-source-view .HyperMD-list-line .cm-header-${level}`,
+  ]),
+  '.workspace-leaf-content[data-type="markdown"] .inline-title',
+];
+
+/** `!important` rules only at boundaries owned by assigned roles. */
 function buildHardOverrides(roles: RoleAssignments, emoji: string | null): string {
   const rules: string[] = [];
 
   if (roles.text !== null) {
     rules.push(
-      `.markdown-preview-view,\n.markdown-source-view {\n  font-family: ${stack(roles.text, emoji, 'sans-serif')} !important;\n}`,
+      `${HARD_TEXT.join(',\n')} {\n  font-family: ${stack(roles.text, emoji, 'sans-serif')} !important;\n}`,
     );
   }
   if (roles.interface !== null) {
     rules.push(
-      `${ROLE_SCOPE},\n${ROLE_SCOPE} > * {\n  font-family: ${stack(roles.interface, emoji, 'sans-serif')} !important;\n}`,
+      `${HARD_INTERFACE.join(',\n')} {\n  font-family: ${stack(roles.interface, emoji, 'sans-serif')} !important;\n}`,
     );
   }
   if (roles.monospace !== null) {
-    // Scoped to code itself, not `.cm-editor .cm-content` — that selector is the
-    // *entire* editor content area, so with !important it forced every paragraph,
-    // heading and list in Live Preview monospace. `code`/`pre` cover reading view;
-    // `.cm-inline-code` and `.cm-line.HyperMD-codeblock` are Obsidian's own classes
-    // for inline code and fenced code-block lines in Live Preview (verified against
-    // app.css — see the code-review report for this fix).
     rules.push(
-      `code,\npre,\n.cm-inline-code,\n.cm-line.HyperMD-codeblock {\n  font-family: ${stack(roles.monospace, emoji, 'monospace')} !important;\n}`,
+      `${HARD_MONOSPACE.join(',\n')} {\n  font-family: ${stack(roles.monospace, emoji, 'monospace')} !important;\n}`,
     );
   }
   if (roles.headings !== null) {
-    // `h1`..`h6` cover reading view only. Live Preview never renders headings as
-    // heading elements — it marks the `.cm-line` div with `.HyperMD-header-1`
-    // through `.HyperMD-header-6` instead, and the note's own title (which Obsidian
-    // treats as a heading) is `.inline-title`. Verified against a running app's own
-    // app.css, which pairs `h1, .markdown-rendered h1` with
-    // `.HyperMD-header-1, .inline-title h1, .HyperMD-list-line .cm-header-1`.
     rules.push(
-      `h1, h2, h3, h4, h5, h6,\n.HyperMD-header-1, .HyperMD-header-2, .HyperMD-header-3, .HyperMD-header-4, .HyperMD-header-5, .HyperMD-header-6,\n.inline-title {\n  font-family: ${stack(roles.headings, emoji, 'inherit')} !important;\n}`,
+      `${HARD_HEADINGS.join(',\n')} {\n  font-family: ${stack(roles.headings, emoji, 'inherit')} !important;\n}`,
     );
-  }
-  if (rules.length > 0) {
-    rules.push('.svg-icon, .svg-icon * {\n  font-family: revert !important;\n}');
   }
   return rules.join('\n\n');
 }
