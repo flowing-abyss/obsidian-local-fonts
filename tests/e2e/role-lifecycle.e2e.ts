@@ -23,12 +23,13 @@ async function matches(selector: string, sample: string, family: string): Promis
 }
 
 describe('role assignment lifecycle', () => {
-  it('moves every role A to B to null without changing independent consumers', async () => {
-    // eslint-disable-next-line complexity -- Every transition checks the role and independent controls.
-    await withRoleScenario('A B null', async () => {
-      await openRoleNote('reading');
-      await openRoleSuggestion();
-      for (const role of ['text', 'interface', 'monospace', 'headings', 'emoji'] as const) {
+  for (const role of ['text', 'interface', 'monospace', 'headings', 'emoji'] as const)
+    it(`moves ${role} A to B to null without changing independent consumers`, async () => {
+      // Each role gets its own fixture and timeout budget for the three transitions.
+      // eslint-disable-next-line complexity -- Every transition checks the role and independent controls.
+      await withRoleScenario(`${role} A B null`, async () => {
+        await openRoleNote('reading');
+        await openRoleSuggestion();
         const familyA = ROLE_FAMILIES[role];
         if (familyA === null) throw new Error(`Missing fixture family for ${role}`);
         const familyB = role === 'emoji' ? 'Role Emoji B' : 'Role Baseline';
@@ -57,9 +58,8 @@ describe('role assignment lifecycle', () => {
           if (role === 'emoji')
             await matches('.markdown-preview-view p', emoji, value ?? 'Role Baseline');
         }
-      }
+      });
     });
-  });
 
   it('preserves multiple ordinary assignments as an initially absent Emoji family is registered, selected, and cleared', async () => {
     await withRoleScenario('later Emoji', async () => {

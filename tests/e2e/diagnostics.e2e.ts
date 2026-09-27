@@ -204,6 +204,8 @@ describe('visible font diagnostics', () => {
       await browser.executeObsidian(({ app }) => {
         app.workspace.detachLeavesOfType('markdown');
       });
+      // Closing the final note also dismisses settings on mobile. Reopen the current tab.
+      await openRoleSettings();
       expect(await check(['Text', 'Interface', 'Emoji'])).toContain(
         'No matching open surface to check',
       );

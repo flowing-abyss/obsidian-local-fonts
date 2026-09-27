@@ -201,7 +201,24 @@ describe('native interface derivatives', () => {
           { ...EMPTY_ROLES, interface: 'Role Interface', emoji: 'Role Emoji A' },
           hard,
         );
-        await assertSurface('.workspace-leaf.mod-active .view-header-title', 'Role Headings', true);
+        // Obsidian hides phone file headers while inline titles are shown. Exercise its
+        // native alternate title presentation without changing any font rules.
+        const inlineTitle = await browser.executeObsidian(() => {
+          const shown = document.body.hasClass('show-inline-title');
+          document.body.removeClass('show-inline-title');
+          return shown;
+        });
+        try {
+          await assertSurface(
+            '.workspace-leaf.mod-active .view-header-title',
+            'Role Headings',
+            true,
+          );
+        } finally {
+          await browser.executeObsidian((_, shown: boolean) => {
+            document.body.toggleClass('show-inline-title', shown);
+          }, inlineTitle);
+        }
         await assertSurface('.metadata-input-longtext', 'Role Mono', true);
         await openRoleSettings();
         await browser.executeObsidian(
