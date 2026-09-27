@@ -1,0 +1,22 @@
+# Independent font roles — final scoped code review
+
+Date: 2026-09-28
+
+Independent read-only subagent review of `6b80bff..a57a5f2`, following the whole-branch review of `500dd91..6b80bff`. The two original Important findings are verdicted below. This record preserves the review-time verification status; subsequent platform results belong in the [implementation record](2026-09-28-independent-font-roles-implementation.md).
+
+- **Headings overrides inline code inside list headings** — **ADDRESSED**. `src/fonts/roles.ts:127` excludes inline-code tokens from Hard Headings; `src/fonts/roles.ts:198` redirects only list-code heading variables to the resolved Monospace stack without imposing a `font-family` or important declaration. `tests/e2e/role-headings.e2e.ts:45` measures real code and heading glyphs across regular/list headings, Live Preview/source, normal/Hard, assigned/unassigned Monospace, and absent/present Emoji; `tests/e2e/role-headings.e2e.ts:65` retains Appearance and independent code-style precedence. Checked the recorded 42 px RED failures and the 20-test floor/latest GREEN result, plus the final full-suite and exact-head Windows heading results.
+- **Required native-window cleanup verification still fails, and its active-leaf oracle is mutating** — **ADDRESSED**. `tests/e2e/helpers/roles.ts:449` captures the actual active leaf, attachment, connectedness, navigability, root and open-window state without navigation. `tests/e2e/helpers/roles.ts:264` awaits native closure before layout; `tests/e2e/helpers/roles.ts:429` awaits activation before committing saved selection. Failure-only deadlines remove listeners/timers, and `tests/e2e/helpers/roles.ts:479` propagates cleanup errors in Node without the demonstrated renderer-retry false success. `tests/e2e/roles-calibration.e2e.ts:43` establishes native setup focus before its snapshot; `tests/e2e/roles-calibration.e2e.ts:507` preserves exact handles, saved selection, original-window identity, close-before-layout and native callback assertions. Its intentional pinned getter characterization at line 543 occurs after read-only capture. Checked cached official getter/focus implementations, focus/close mutation failures, setup-fault RED evidence, and exact-head Windows raw results: both native matrices pass, with the saved root actually focused and selection preserved. The historical `6b80bff` mismatch remains retrospectively unclassified; this verdict does not attribute it to one unproven cause.
+
+### New Breakage in the Fix Diff
+
+- **None** — no new Critical, Important or Minor defect identified in the supplied `6b80bff..a57a5f2` diff. The synchronous application change at `src/settings-tab.ts:532` keeps diagnostics aligned with in-memory selection while retaining save rejection. The persistence helper drains tracked writes before rollback and preserves restoration after fresh-instance saves; recorded deferred-save and rollback regressions cover these changes.
+- **Check:** Read the complete supplied diff once and checked the final verification logs without rerunning suites. `verify` records 418 passing tests/all gates; focused native coverage records 30 passing tests/four pairs; final local desktop coverage records 176 passing/four capability skips/26 pairs. Final calibration worker logs each contain 13 successful cleanup results, ten successful setup results and the one intentional canceled-setup error.
+
+### Out-of-Scope Observations
+
+- **Unclassified Windows floor navigation stall — non-blocking for this scoped fix verdict, still a platform completion limit.** Unchanged `tests/e2e/fonts.e2e.ts:218` awaits `openLinkText` before its editor/glyph assertions. Exact-head worker log `ci-a57a5f2/windows-artifacts/fonts.e2e-0-1.log:471` records that command, followed by its script-timeout retry at line 472; no inner stalled await or causal connection to this diff is established. The initial Windows run remains 175 passed/four skipped/one failed. A same-SHA rerun cannot retrospectively prove a fix.
+- **Check:** Exact-head logs confirm Linux/macOS each 176 passed/four skipped/26 pairs and Android 1.8.10 76 passed/14 capability skips/13 specs. Latest Android and the controlled Windows rerun were pending at review time; iOS remains Unverified. These are separate completion gates, not new scoped source findings.
+
+### Verdict
+
+**Fix round:** All findings addressed, no new Critical/Important breakage. Full-platform completion is not established by this scoped review.
