@@ -5,7 +5,7 @@ import {
   type App,
   type SettingDefinitionItem,
 } from 'obsidian';
-import { quote } from './fonts/css.js';
+import { quote } from './fonts/family.js';
 import { canRender, OS_ENGINES, SUPPORTED_OSES, type Engine, type OS } from './fonts/platform.js';
 import { isFamilyApplied } from './fonts/probe.js';
 import { explainSelection, type FaceVerdict, type SelectionReason } from './fonts/select.js';

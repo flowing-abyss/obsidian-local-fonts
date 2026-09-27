@@ -1,5 +1,5 @@
 import { browser } from '@wdio/globals';
-import { quote } from '../../../src/fonts/css.js';
+import { quote } from '../../../src/fonts/family.js';
 import type { PluginSettings, RoleAssignments } from '../../../src/settings.js';
 
 export type NoteMode = 'reading' | 'live' | 'source';
@@ -37,7 +37,6 @@ interface RoleState {
   bodyStyle: string | null;
   bodyClass: string | null;
   nativeStyle: HTMLStyleElement | null;
-  notePath: string | null;
   leaves: Array<{ detach(): void }>;
   initialWindows: Window[];
   suggestion: { close(): void } | null;
@@ -81,7 +80,6 @@ export async function beginRoleScenario(): Promise<void> {
       bodyStyle: document.body.getAttribute('style'),
       bodyClass: document.body.getAttribute('class'),
       nativeStyle: null,
-      notePath: null,
       leaves: [],
       initialWindows: (
         (workspace as unknown as { floatingSplit?: { children: Array<{ win: Window }> } })
@@ -93,10 +91,6 @@ export async function beginRoleScenario(): Promise<void> {
       settingsOpened: false,
     };
     testWindow.__roleScenario = state;
-    const path = 'Role title ABCАБя0123 😀 ☀️ 👩‍💻.md';
-    state.notePath = path;
-    const content = await app.vault.adapter.read('Font roles.md');
-    await app.vault.adapter.write(path, content);
     const style = new DOMParser()
       .parseFromString('<style data-role-test="native"></style>', 'text/html')
       .querySelector('style');
@@ -153,11 +147,6 @@ export async function endRoleScenario(): Promise<void> {
           leaf.detach();
         });
       await clean(() => state.nativeStyle?.remove());
-      const notePath = state.notePath;
-      if (notePath !== null)
-        await clean(async () => {
-          if (await app.vault.adapter.exists(notePath)) await app.vault.adapter.remove(notePath);
-        });
       await clean(() => {
         if (state.bodyStyle === null) document.body.removeAttribute('style');
         else document.body.setAttribute('style', state.bodyStyle);
@@ -207,7 +196,7 @@ export async function openRoleNote(mode: NoteMode): Promise<void> {
   await browser.executeObsidian(async ({ app }, requested: NoteMode) => {
     const state = (window as Window & { __roleScenario?: RoleState }).__roleScenario;
     if (state === undefined) throw new Error('No role scenario is active');
-    await app.workspace.openLinkText('Font roles.md', '', true);
+    await app.workspace.openLinkText('Role title ABCАБя0123 😀 ☀️ 👩‍💻.md', '', true);
     const leaf = app.workspace.getLeaf(false);
     state.leaves.push(leaf);
     const viewState = leaf.getViewState();
@@ -275,7 +264,9 @@ export async function measureSurface(
           return (
             doc !== undefined &&
             doc !== null &&
-            Array.from(doc.querySelectorAll(css)).some((el) => el.textContent.includes(text))
+            Array.from(doc.querySelectorAll(css)).some(
+              (el) => el.getClientRects().length > 0 && el.textContent.includes(text),
+            )
           );
         },
         selector,
@@ -313,11 +304,17 @@ export async function measureSurface(
       }
       if (doc === undefined || doc === null)
         throw new Error(`No ${destination} document was opened by this role scenario`);
-      const element = Array.from(doc.querySelectorAll(css)).find((el) =>
-        el.textContent.includes(text),
+      const element = Array.from(doc.querySelectorAll(css)).find(
+        (el) => el.getClientRects().length > 0 && el.textContent.includes(text),
       );
       if (element === undefined)
         throw new Error(`No ${destination} element ${css} contains ${JSON.stringify(text)}`);
+      element.scrollIntoView({ block: 'center' });
+      await new Promise<void>((resolve) =>
+        doc.defaultView?.requestAnimationFrame(() => {
+          resolve();
+        }),
+      );
       const walker = doc.createTreeWalker(element, 4);
       let node: Node | null = walker.nextNode();
       while (node !== null && !(node.nodeValue?.includes(text) ?? false)) node = walker.nextNode();
@@ -358,6 +355,8 @@ export async function measureSurface(
         const range = doc.createRange();
         range.setStart(node, start);
         range.setEnd(node, start + text.length);
+        if (range.getBoundingClientRect().width === 0)
+          throw new Error(`Zero-width visible text range in ${css}`);
         return {
           width: range.getBoundingClientRect().width,
           referenceWidth: reference.getBoundingClientRect().width,

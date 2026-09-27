@@ -1,4 +1,6 @@
 import type { RoleAssignments } from '../settings.js';
+import { quote } from './family.js';
+import { buildRoleCss } from './roles.js';
 import type { FaceRecord, FontFormat } from './types.js';
 
 /**
@@ -58,16 +60,6 @@ const CSS_FORMAT: Record<FontFormat, string> = {
   ttf: 'truetype',
 };
 
-/**
- * Escape a family name for use inside a single-quoted CSS string. Exported so the
- * settings tab can quote a family the same way when setting a preview element's
- * `font-family` inline (family names are arbitrary text read out of a font binary,
- * not something that can be hardcoded in styles.css).
- */
-export function quote(family: string): string {
-  return `'${family.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
-}
-
 /** The closed interval CSS allows a `font-weight` value in. */
 const CSS_WEIGHT_MIN = 1;
 const CSS_WEIGHT_MAX = 1000;
@@ -119,81 +111,21 @@ function weightDescriptor(face: FaceRecord): string {
   return min === max ? String(min) : `${String(min)} ${String(max)}`;
 }
 
-function fontFace(face: FaceRecord, url: string, isEmoji: boolean): string {
+function fontFace(face: FaceRecord, url: string, family: string, restricted: boolean): string {
   const lines = [
     '@font-face {',
-    `  font-family: ${quote(face.family)};`,
+    `  font-family: ${quote(family)};`,
     `  font-style: ${face.italic ? 'italic' : 'normal'};`,
     `  font-weight: ${weightDescriptor(face)};`,
     '  font-display: swap;',
     `  src: url('${url}') format('${CSS_FORMAT[face.format]}');`,
   ];
-  if (isEmoji) {
+  if (restricted) {
     lines.push(`  unicode-range: ${EMOJI_UNICODE_RANGE};`);
   }
   lines.push('}');
   return lines.join('\n');
 }
-
-/**
- * CSS-wide keywords are only valid as the *entire* value of a property, never as one
- * item in a comma-separated font-family list. `font-family: 'X', inherit` is invalid
- * CSS — the whole declaration is dropped at parse/computed-value time, silently
- * losing 'X' too. `stack()` must never append one of these as a trailing "fallback".
- */
-const CSS_WIDE_KEYWORDS = new Set(['inherit', 'initial', 'unset', 'revert', 'revert-layer']);
-
-/**
- * Emoji first (see EMOJI_UNICODE_RANGE), then the role family, then the theme's own
- * value. Skips the emoji entry when it is the same family as the role, so a family
- * assigned to both `emoji` and this role does not appear twice in the stack.
- *
- * `fallback` is omitted entirely when it is a CSS-wide keyword (e.g. "inherit" for
- * the headings role): an unresolvable family already falls through to whatever the
- * cascade provides, so no trailing generic is needed, and appending one as a list
- * item would make the whole value invalid (see CSS_WIDE_KEYWORDS).
- */
-function stack(family: string, emoji: string | null, fallback: string): string {
-  const parts =
-    emoji !== null && emoji !== family ? [quote(emoji), quote(family)] : [quote(family)];
-  return CSS_WIDE_KEYWORDS.has(fallback) ? parts.join(', ') : `${parts.join(', ')}, ${fallback}`;
-}
-
-/**
- * `html body`, not `body`, and the extra element selector is load-bearing.
- *
- * This CSS is delivered inside the plugin's own styles.css element (see main.ts), which
- * Obsidian appends to the head *before* the theme and before every user snippet —
- * measured in a real vault: plugin stylesheets sat at index 45, the theme at 46,
- * snippets at 47 and up. With equal specificity the later rule wins, so a plain
- * `body { --font-text-override: ... }` in a theme or a snippet would silently take these
- * roles over. The mechanism this replaced could not lose that way: a constructed sheet
- * in `adoptedStyleSheets` is ordered after every document stylesheet no matter what.
- *
- * Two element names (0-0-2) restore that, without `!important` — which would have gone
- * further than the old behaviour and started beating inline styles too. Element
- * selectors only, so this holds in pop-out windows, where the body's classes differ.
- *
- * `body` and not `:root`: Obsidian's own `--font-text: var(--font-text-override, ...)`
- * chain is declared on `body` in app.css, with the string `'??'` as the placeholder. A
- * value declared on an element beats one inherited from an ancestor whatever the
- * specificity, so writing these to `:root` would leave that placeholder in charge and
- * apply no font at all.
- *
- * What this deliberately still loses to: `!important`, any selector carrying a class or
- * an id (`body.theme-dark { ... }` outranks it), and inline styles — the tier Obsidian's
- * own Appearance settings write to, so a font picked there keeps winning, as before.
- */
-const ROLE_SCOPE = 'html body';
-
-const HEADING_VARIABLES = [
-  '--h1-font',
-  '--h2-font',
-  '--h3-font',
-  '--h4-font',
-  '--h5-font',
-  '--h6-font',
-];
 
 export interface BuildCssInput {
   /** Already narrowed to one file per (family, weight, style) by selectFaces. */
@@ -204,137 +136,41 @@ export interface BuildCssInput {
   resolve: (path: string) => string;
 }
 
-/**
- * Push both variable tiers for one Obsidian font role, carrying the identical value.
- *
- * Both tiers must stay, for two independent reasons — do not "simplify" this to one:
- * - `-override` is the tier Obsidian's own Appearance settings write, and it is what
- *   wins inside Obsidian's own `--font-X: var(--font-X-override, var(--font-X-theme,
- *   ...))` fallback chain. Anyone who has ever picked a font in Appearance settings
- *   depends on this tier existing.
- * - `-theme` is the tier community themes are written against; some themes read
- *   `--font-X-theme` *directly*, bypassing Obsidian's own `--font-X` chain entirely
- *   (observed live: Base16 Default Dark's `.bases-view` rule does this). Obsidian's
- *   own default for that tier is the literal placeholder string `'??'` — a font
- *   family that does not exist — so a theme reading it directly gets no font at all,
- *   which drops every family in the stack including emoji. Writing `-theme` too is
- *   what makes those themes pick up our fonts instead of silently falling through.
- */
-function pushTieredDeclaration(
-  declarations: string[],
-  role: 'text' | 'interface' | 'monospace',
-  value: string,
-): void {
-  declarations.push(`  --font-${role}-override: ${value};`);
-  declarations.push(`  --font-${role}-theme: ${value};`);
+/** A private name that cannot shadow an ordinary registered family. */
+export function resolveEmojiAlias(
+  faces: readonly FaceRecord[],
+  family: string | null,
+): string | null {
+  if (family === null || !faces.some((face) => face.family === family)) return null;
+  const names = new Set(faces.map((face) => face.family.toLowerCase()));
+  const base = '__local-fonts-emoji__';
+  let alias = base;
+  let suffix = 1;
+  while (names.has(alias.toLowerCase())) {
+    alias = `${base}${suffix}`;
+    suffix++;
+  }
+  return alias;
 }
 
-/** `--font-*-override`/`--font-*-theme` / `--h*-font` declarations for assigned roles. */
-function buildDeclarations(roles: RoleAssignments): string[] {
-  const emoji = roles.emoji;
-  const declarations: string[] = [];
-
-  if (roles.text !== null) {
-    pushTieredDeclaration(declarations, 'text', stack(roles.text, emoji, 'sans-serif'));
-  }
-  if (roles.interface !== null) {
-    pushTieredDeclaration(declarations, 'interface', stack(roles.interface, emoji, 'sans-serif'));
-  }
-  if (roles.monospace !== null) {
-    pushTieredDeclaration(declarations, 'monospace', stack(roles.monospace, emoji, 'monospace'));
-  }
-  if (roles.headings !== null) {
-    // No Obsidian-level heading variable tier exists to pair with `--h*-font`
-    // (headings are not one of Obsidian's `--font-X-override`/`-theme` roles), so
-    // there is nothing to write a second tier for here — leave this path alone.
-    for (const variable of HEADING_VARIABLES) {
-      declarations.push(`  ${variable}: ${stack(roles.headings, emoji, 'inherit')};`);
-    }
-  }
-
-  return declarations;
-}
-
-/**
- * Build the whole stylesheet: one @font-face per selected file, then the forcing rules.
- *
- * Writes both the `*-override` and `*-theme` variable tiers for text, interface and
- * monospace — see `pushTieredDeclaration` for why neither tier can be dropped.
- */
+/** Ordinary registrations remain unrestricted, even when also assigned to Emoji. */
 export function buildCss(input: BuildCssInput): string {
   const { faces, roles, hardOverride, resolve } = input;
-  const blocks: string[] = [];
-
-  for (const face of faces) {
-    blocks.push(fontFace(face, resolve(face.path), face.family === roles.emoji));
+  const alias = resolveEmojiAlias(faces, roles.emoji);
+  const urls = new Map<string, string>();
+  const sourceUrl = (path: string): string => {
+    const cached = urls.get(path);
+    if (cached !== undefined) return cached;
+    const url = resolve(path);
+    urls.set(path, url);
+    return url;
+  };
+  const blocks = faces.map((face) => fontFace(face, sourceUrl(face.path), face.family, false));
+  if (alias !== null) {
+    for (const face of faces.filter((face) => face.family === roles.emoji))
+      blocks.push(fontFace(face, sourceUrl(face.path), alias, true));
   }
-
-  const declarations = buildDeclarations(roles);
-  if (declarations.length > 0) {
-    blocks.push(`${ROLE_SCOPE} {\n${declarations.join('\n')}\n}`);
-  }
-
-  if (hardOverride) {
-    const hard = buildHardOverrides(roles);
-    if (hard !== '') {
-      blocks.push(hard);
-    }
-  }
-
+  const roleCss = buildRoleCss({ roles, hardOverride, emojiAlias: alias });
+  if (roleCss !== '') blocks.push(roleCss);
   return blocks.join('\n\n');
-}
-
-/**
- * `!important` rules for themes that hardcode font-family.
- *
- * The container selectors below carry no icon exclusion: a compound `:not(.svg-icon)`
- * on the container itself (e.g. `body:not(.svg-icon)`) never excludes anything, because
- * `body` is never `.svg-icon` — it only blocks the rule from matching an icon element
- * directly, while the forced `font-family` still *inherits* into every descendant,
- * icons included, regardless of any `:not()` on the ancestor. The one thing that
- * actually protects icons is the explicit reset rule appended at the end: it runs last
- * in source order, so it wins the cascade against the rules above without needing
- * excess specificity, and `font-family: revert` hands inheritance back to whatever the
- * icon font's own rule (or the theme) declares.
- */
-function buildHardOverrides(roles: RoleAssignments): string {
-  const emoji = roles.emoji;
-  const rules: string[] = [];
-
-  if (roles.text !== null) {
-    rules.push(
-      `.markdown-preview-view,\n.markdown-source-view {\n  font-family: ${stack(roles.text, emoji, 'sans-serif')} !important;\n}`,
-    );
-  }
-  if (roles.interface !== null) {
-    rules.push(
-      `${ROLE_SCOPE} {\n  font-family: ${stack(roles.interface, emoji, 'sans-serif')} !important;\n}`,
-    );
-  }
-  if (roles.monospace !== null) {
-    // Scoped to code itself, not `.cm-editor .cm-content` — that selector is the
-    // *entire* editor content area, so with !important it forced every paragraph,
-    // heading and list in Live Preview monospace. `code`/`pre` cover reading view;
-    // `.cm-inline-code` and `.cm-line.HyperMD-codeblock` are Obsidian's own classes
-    // for inline code and fenced code-block lines in Live Preview (verified against
-    // app.css — see the code-review report for this fix).
-    rules.push(
-      `code,\npre,\n.cm-inline-code,\n.cm-line.HyperMD-codeblock {\n  font-family: ${stack(roles.monospace, emoji, 'monospace')} !important;\n}`,
-    );
-  }
-  if (roles.headings !== null) {
-    // `h1`..`h6` cover reading view only. Live Preview never renders headings as
-    // heading elements — it marks the `.cm-line` div with `.HyperMD-header-1`
-    // through `.HyperMD-header-6` instead, and the note's own title (which Obsidian
-    // treats as a heading) is `.inline-title`. Verified against a running app's own
-    // app.css, which pairs `h1, .markdown-rendered h1` with
-    // `.HyperMD-header-1, .inline-title h1, .HyperMD-list-line .cm-header-1`.
-    rules.push(
-      `h1, h2, h3, h4, h5, h6,\n.HyperMD-header-1, .HyperMD-header-2, .HyperMD-header-3, .HyperMD-header-4, .HyperMD-header-5, .HyperMD-header-6,\n.inline-title {\n  font-family: ${stack(roles.headings, emoji, 'inherit')} !important;\n}`,
-    );
-  }
-  if (rules.length > 0) {
-    rules.push('.svg-icon, .svg-icon * {\n  font-family: revert !important;\n}');
-  }
-  return rules.join('\n\n');
 }

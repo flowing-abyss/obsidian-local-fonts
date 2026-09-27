@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_SETTINGS } from '../settings.js';
-import { buildCss } from './css.js';
+import { buildCss, resolveEmojiAlias } from './css.js';
 import type { FaceRecord } from './types.js';
 
 function face(overrides: Partial<FaceRecord>): FaceRecord {
@@ -24,6 +24,17 @@ function face(overrides: Partial<FaceRecord>): FaceRecord {
 const resolve = (path: string): string => `app://local/vault/${path}`;
 
 describe('buildCss', () => {
+  it('applies only Emoji without selecting a text role', () => {
+    const css = buildCss({
+      faces: [face({ family: 'Role Emoji A' })],
+      roles: { ...DEFAULT_SETTINGS.roles, emoji: 'Role Emoji A' },
+      hardOverride: false,
+      resolve,
+    });
+    expect(css).toContain('html body > *');
+    for (const role of ['interface', 'text', 'monospace']) expect(css).toContain(`--font-${role}:`);
+    expect(css).not.toContain('!important');
+  });
   it('emits a @font-face per selected file, using a resource URL rather than base64', () => {
     const css = buildCss({
       faces: [face({})],
@@ -299,7 +310,10 @@ describe('buildCss', () => {
       resolve,
     });
 
-    expect(css).toMatch(/--font-text-override:\s*'Probe Emoji',\s*'Probe Sans'/);
+    expect(css).toContain("--font-text-override: 'Probe Sans', sans-serif;");
+    expect(css).toContain(
+      "--font-text: '__local-fonts-emoji__', var(--local-fonts-base-font-text);",
+    );
     expect(css).toContain('unicode-range:');
   });
 
@@ -460,10 +474,10 @@ describe('buildCss', () => {
     const sheet = new CSSStyleSheet();
     sheet.replaceSync(css);
 
-    // 2 @font-face + 1 body + 4 hard-override groups + 1 icon reset = 8 top-level
+    // 3 @font-face + 2 body/child + 4 hard-override groups + 1 icon reset = 10 top-level
     // rules. If any block had a syntax error, the parser would drop that rule (or
     // everything after it in a pathological case) and this count would come up short.
-    expect(sheet.cssRules).toHaveLength(8);
+    expect(sheet.cssRules).toHaveLength(10);
     const cssText: string = Array.from(sheet.cssRules, (rule: CSSRule) => rule.cssText).join('\n');
     expect(cssText).toContain('@font-face');
     expect(cssText).toContain('!important');
@@ -588,5 +602,57 @@ describe('buildCss', () => {
     // Guards against the assertion above vacuously passing because no multi-item
     // list was ever found (e.g. if buildCss stopped emitting any stack at all).
     expect(checkedAtLeastOneList).toBe(true);
+  });
+});
+
+describe('Emoji alias registration', () => {
+  it('keeps the ordinary family unrestricted when used by Text and Emoji', () => {
+    const css = buildCss({
+      faces: [face({})],
+      roles: { ...DEFAULT_SETTINGS.roles, text: 'Probe Sans', emoji: 'Probe Sans' },
+      hardOverride: false,
+      resolve,
+    });
+    const blocks = css.split('\n\n').filter((block) => block.startsWith('@font-face'));
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]).toContain("font-family: 'Probe Sans'");
+    expect(blocks[0]).not.toContain('unicode-range');
+    expect(blocks[1]).toContain("font-family: '__local-fonts-emoji__'");
+    expect(blocks[1]).toContain('unicode-range:');
+  });
+  it('avoids mixed-case ordinary-family collisions without persisting an alias', () => {
+    const faces = [
+      face({}),
+      face({ family: '__LOCAL-fonts-EMOJI__' }),
+      face({ family: '__local-fonts-emoji__1' }),
+    ];
+    expect(resolveEmojiAlias(faces, 'Probe Sans')).toBe('__local-fonts-emoji__2');
+    expect(resolveEmojiAlias(faces, null)).toBeNull();
+    expect(resolveEmojiAlias(faces, 'Missing')).toBeNull();
+  });
+  it('resolves each hidden path once and preserves every alias weight and style', () => {
+    const resolver = vi.fn((path: string) => `app://vault/${path}?n=${resolver.mock.calls.length}`);
+    const faces = [
+      face({ path: '.fonts/a.ttf', weight: 400 }),
+      face({ path: '.fonts/b.ttf', weight: 700, italic: true }),
+      face({ path: '.fonts/a.ttf', axes: [{ tag: 'wght', min: 100, max: 900, default: 400 }] }),
+    ];
+    const css = buildCss({
+      faces,
+      roles: { ...DEFAULT_SETTINGS.roles, emoji: 'Probe Sans' },
+      hardOverride: false,
+      resolve: resolver,
+    });
+    expect(resolver).toHaveBeenCalledTimes(2);
+    const blocks = css.split('\n\n').filter((block) => block.startsWith('@font-face'));
+    expect(blocks).toHaveLength(6);
+    for (let i = 0; i < 3; i++)
+      expect(
+        blocks[i + 3]
+          ?.replace("'__local-fonts-emoji__'", "'Probe Sans'")
+          .replace(/\n {2}unicode-range:[^;]+;/, ''),
+      ).toBe(blocks[i]);
+    expect(blocks[4]).toContain('font-style: italic;');
+    expect(blocks[5]).toContain('font-weight: 100 900;');
   });
 });
