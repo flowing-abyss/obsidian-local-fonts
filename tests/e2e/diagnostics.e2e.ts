@@ -1,6 +1,7 @@
 import { browser, expect } from '@wdio/globals';
 import { describe, it } from 'mocha';
 import {
+  closeRoleSettings,
   openRoleNote,
   openRoleSettings,
   setNativeInlineFonts,
@@ -145,9 +146,7 @@ async function settingsSharesNoteDocument(): Promise<boolean> {
 }
 
 async function assertReadableFallback(): Promise<void> {
-  await browser.executeObsidian(({ app }) => {
-    (app as unknown as { setting: { close(): void } }).setting.close();
-  });
+  await closeRoleSettings();
   await browser.waitUntil(
     async () =>
       browser.executeObsidian(() => {
@@ -194,17 +193,16 @@ describe('visible font diagnostics', () => {
       const overridden = await check(['Text', 'Interface', 'Emoji']);
       expect(overridden).toContain('Interface: Role Interface — Local font loaded');
       expect(overridden).toContain('Settings label: Another font is listed first here');
-      await browser.executeObsidian(({ app }) => {
-        (app as unknown as { setting: { close(): void } }).setting.close();
-      });
+      await closeRoleSettings();
       await openRoleSettings();
       const reopened = await check(['Text', 'Interface', 'Emoji']);
       expect(reopened).toContain('Interface: Role Interface — Local font loaded');
       expect(reopened).toContain('Settings label: Another font is listed first here');
+      await closeRoleSettings();
       await browser.executeObsidian(({ app }) => {
         app.workspace.detachLeavesOfType('markdown');
       });
-      // Closing the final note also dismisses settings on mobile. Reopen the current tab.
+      // Reopen after closing the notes; phone modal closure has already completed.
       await openRoleSettings();
       expect(await check(['Text', 'Interface', 'Emoji'])).toContain(
         'No matching open surface to check',

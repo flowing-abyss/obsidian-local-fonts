@@ -57,7 +57,8 @@ export const config: WebdriverIO.Config = {
   },
   waitforInterval: 250,
   waitforTimeout: 5 * 1000,
-  logLevel: 'warn',
+  // Keep command payloads/results in per-worker artifacts to locate native-window hangs.
+  logLevel: 'info',
   outputDir: path.resolve(repoRoot, 'tests/e2e/wdio-logs'),
 
   cacheDir,

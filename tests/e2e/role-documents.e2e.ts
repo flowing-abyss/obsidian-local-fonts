@@ -3,6 +3,7 @@ import { describe, it } from 'mocha';
 import type { TestDocument } from './helpers/roles.js';
 import {
   applyRoles,
+  closeRoleSettings,
   EMPTY_ROLES,
   measureSurface,
   openRoleNote,
@@ -122,9 +123,7 @@ describe('independent role documents', () => {
         const heading = await measureSurface('.role-inherited-dialog', sample, family, 'settings');
         expect(Math.abs(heading.width - heading.referenceWidth)).toBeLessThanOrEqual(0.5);
       }
-      await browser.executeObsidian(({ app }) => {
-        (app as unknown as { setting: { close(): void } }).setting.close();
-      });
+      await closeRoleSettings();
       await applyRoles(
         { ...EMPTY_ROLES, interface: 'Role Headings', emoji: 'Role Emoji B' },
         false,

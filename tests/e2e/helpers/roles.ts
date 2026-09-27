@@ -46,6 +46,7 @@ interface RoleState {
   settingRow: HTMLElement | null;
   settingsDocument: Document | null;
   settingsOpened: boolean;
+  closingSettingsRoot: HTMLElement | null;
 }
 
 /** Every renderer callback is self-contained: only arguments and { app, obsidian } cross the boundary. */
@@ -94,6 +95,7 @@ async function beginRoleScenario(): Promise<void> {
       settingRow: null,
       settingsDocument: null,
       settingsOpened: false,
+      closingSettingsRoot: null,
     };
     testWindow.__roleScenario = state;
     const style = new DOMParser()
@@ -441,29 +443,86 @@ export async function closeRoleSuggestion(): Promise<void> {
   });
 }
 
-export async function openRoleSettings(): Promise<void> {
-  await browser.executeObsidian(({ app, obsidian }) => {
+interface FixtureSettings {
+  open(): void;
+  close(): void;
+  openTabById(id: string): void;
+  tabContentContainer?: HTMLElement;
+  activeTab?: { containerEl: HTMLElement; refreshInFlight?: boolean };
+}
+
+/** Wait for the old displayed document/root to close before a subsequent open. */
+export async function closeRoleSettings(): Promise<void> {
+  await browser.executeObsidian(({ app }) => {
     const state = (window as Window & { __roleScenario?: RoleState }).__roleScenario;
     if (state === undefined) throw new Error('No role scenario is active');
-    const setting = (
-      app as unknown as {
-        setting: {
-          open(): void;
-          openTabById(id: string): void;
-          tabContentContainer?: HTMLElement;
-          activeTab?: { containerEl: HTMLElement };
-        };
-      }
-    ).setting;
+    const setting = (app as unknown as { setting: FixtureSettings }).setting;
+    const current = setting.tabContentContainer;
+    state.closingSettingsRoot =
+      current !== undefined && current.getClientRects().length > 0
+        ? current
+        : (setting.activeTab?.containerEl ?? null);
+    setting.close();
+  });
+  await browser.waitUntil(
+    async () =>
+      browser.executeObsidian(() => {
+        const root = (window as Window & { __roleScenario?: RoleState }).__roleScenario
+          ?.closingSettingsRoot;
+        return root == null || !root.isConnected || root.ownerDocument.defaultView?.closed === true;
+      }),
+    { timeout: 10_000, timeoutMsg: 'The displayed Local Fonts settings root did not close' },
+  );
+  await browser.executeObsidian(() => {
+    const state = (window as Window & { __roleScenario?: RoleState }).__roleScenario;
+    if (state === undefined) throw new Error('No role scenario is active');
+    state.closingSettingsRoot = null;
+    state.settingsOpened = false;
+  });
+}
+
+export async function openRoleSettings(): Promise<void> {
+  await browser.executeObsidian(({ app }) => {
+    const state = (window as Window & { __roleScenario?: RoleState }).__roleScenario;
+    if (state === undefined) throw new Error('No role scenario is active');
+    const setting = (app as unknown as { setting: FixtureSettings }).setting;
     setting.open();
     state.settingsOpened = true;
     setting.openTabById('local-fonts');
+  });
+  await browser.waitUntil(
+    async () =>
+      browser.executeObsidian(({ app }) => {
+        const setting = (app as unknown as { setting: FixtureSettings }).setting;
+        const current = setting.tabContentContainer;
+        const root =
+          current !== undefined && current.getClientRects().length > 0
+            ? current
+            : setting.activeTab?.containerEl;
+        return (
+          root?.isConnected === true &&
+          setting.activeTab?.refreshInFlight === false &&
+          Array.from(root.querySelectorAll('button')).some(
+            (button) => button.textContent === 'Check' && button.getClientRects().length > 0,
+          )
+        );
+      }),
+    { timeout: 10_000, timeoutMsg: 'Current Local Fonts settings Check did not become ready' },
+  );
+  await browser.executeObsidian(({ app, obsidian }) => {
+    const state = (window as Window & { __roleScenario?: RoleState }).__roleScenario;
+    if (state === undefined) throw new Error('No role scenario is active');
+    const setting = (app as unknown as { setting: FixtureSettings }).setting;
     const displayed =
       setting.tabContentContainer !== undefined &&
       setting.tabContentContainer.getClientRects().length > 0
         ? setting.tabContentContainer
         : setting.activeTab?.containerEl;
-    if (displayed === undefined || displayed.getClientRects().length === 0) {
+    if (
+      displayed === undefined ||
+      !displayed.isConnected ||
+      displayed.getClientRects().length === 0
+    ) {
       throw new Error('Local Fonts settings tab has no visible content');
     }
     const sample = 'ABCАБя0123 😀 ☀️ 👩‍💻';

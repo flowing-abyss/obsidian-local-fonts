@@ -16,7 +16,11 @@ export async function captureRoleFailure(testName: string): Promise<void> {
     ).plugins['local-fonts'];
     const state = (
       window as Window & {
-        __roleScenario?: { settingsDocument: Document | null; initialWindows: Window[] };
+        __roleScenario?: {
+          settingsDocument: Document | null;
+          initialWindows: Window[];
+          layout: { active?: string };
+        };
       }
     ).__roleScenario;
     const windows =
@@ -37,6 +41,9 @@ export async function captureRoleFailure(testName: string): Promise<void> {
         ios: obsidian.Platform.isIosApp,
         android: obsidian.Platform.isAndroidApp,
       },
+      savedActiveLeaf: state?.layout.active ?? null,
+      currentActiveLeaf:
+        (app.workspace as unknown as { activeLeaf?: { id: string } }).activeLeaf?.id ?? null,
       roles: plugin?.settings.roles,
       hardOverride: plugin?.settings.hardOverride,
       documents: [...new Set(documents)].map((doc) => {
