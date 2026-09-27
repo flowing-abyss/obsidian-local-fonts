@@ -1,5 +1,5 @@
 import { browser } from '@wdio/globals';
-import type { WorkspaceLeaf } from 'obsidian';
+import type { DataAdapter, WorkspaceLeaf } from 'obsidian';
 import { quote } from '../../../src/fonts/family.js';
 import type { PluginSettings, RoleAssignments } from '../../../src/settings.js';
 import { captureRoleFailure } from './evidence.js';
@@ -16,6 +16,7 @@ interface FixtureFontPlugin {
   settings: PluginSettings;
   applyFonts(): void;
   saveSettings(): Promise<void>;
+  scanQueue: Promise<void>;
 }
 
 export const EMPTY_ROLES: RoleAssignments = {
@@ -65,6 +66,14 @@ interface ElectronRoleWindow extends Window {
 
 interface RoleState {
   cleanupTrace?: Array<Record<string, unknown>>;
+  originalPlugin: FixtureFontPlugin;
+  persistence: {
+    path: string;
+    attempted: boolean;
+    pending: Set<Promise<void>>;
+    original: DataAdapter['write'];
+    descriptor: PropertyDescriptor | undefined;
+  };
   settings: PluginSettings;
   layout: unknown;
   bodyStyle: string | null;
@@ -110,7 +119,19 @@ async function beginRoleScenario(): Promise<void> {
     ).plugins['local-fonts'];
     if (plugin === undefined) throw new Error('Local Fonts is not enabled');
     const workspace = app.workspace as unknown as { getLayout(): unknown };
+    // The scan updates memory before saving. Snapshot after its existing queue
+    // settles so a startup save cannot be mistaken for scenario persistence.
+    await plugin.scanQueue;
+    const adapter = app.vault.adapter;
     const state: RoleState = {
+      originalPlugin: plugin,
+      persistence: {
+        path: `${app.vault.configDir}/plugins/local-fonts/data.json`,
+        attempted: false,
+        pending: new Set(),
+        original: adapter.write.bind(adapter),
+        descriptor: Object.getOwnPropertyDescriptor(adapter, 'write'),
+      },
       settings: JSON.parse(JSON.stringify(plugin.settings)) as PluginSettings,
       layout: workspace.getLayout(),
       bodyStyle: document.body.getAttribute('style'),
@@ -130,6 +151,21 @@ async function beginRoleScenario(): Promise<void> {
       closingSettingsRoot: null,
     };
     testWindow.__roleScenario = state;
+    // Observe the stable adapter boundary, including saves from a re-enabled
+    // plugin instance or rescan. Count attempts before calling through, including
+    // rejected writes, and retain in-flight operations until they settle.
+    adapter.write = function (path, data, options) {
+      const persistence = state.persistence;
+      if (path !== persistence.path) return persistence.original.call(this, path, data, options);
+      persistence.attempted = true;
+      const pending = persistence.original.call(this, path, data, options);
+      persistence.pending.add(pending);
+      void pending.then(
+        () => persistence.pending.delete(pending),
+        () => persistence.pending.delete(pending),
+      );
+      return pending;
+    };
     const style = new DOMParser()
       .parseFromString('<style data-role-test="native"></style>', 'text/html')
       .querySelector('style');
@@ -334,15 +370,33 @@ async function endRoleScenario(): Promise<void> {
       const plugin = (
         app.plugins as unknown as { plugins: Record<string, FixtureFontPlugin | undefined> }
       ).plugins['local-fonts'];
+      record('drain scenario persistence');
+      await clean(async () => {
+        // A rescan may not have reached saveSettings yet. Its queue belongs to
+        // the instance, so drain both the original and any re-enabled instance.
+        await state.originalPlugin.scanQueue;
+        if (plugin !== undefined) await plugin.scanQueue;
+        while (state.persistence.pending.size > 0)
+          await Promise.allSettled([...state.persistence.pending]);
+      });
       if (plugin !== undefined) {
         plugin.settings = state.settings;
-        record('save settings');
-        await clean(() => plugin.saveSettings());
-        record('settings saved');
         await clean(() => {
           plugin.applyFonts();
         });
       }
+      if (state.persistence.attempted) {
+        record('save settings');
+        await clean(() =>
+          plugin === undefined
+            ? app.vault.adapter.write(
+                state.persistence.path,
+                JSON.stringify(state.settings, null, 2),
+              )
+            : plugin.saveSettings(),
+        );
+        record('settings saved');
+      } else record('settings unchanged on disk');
       await clean(async () => {
         const workspace = app.workspace as typeof app.workspace & {
           setLayout(layout: unknown): Promise<void>;
@@ -385,6 +439,9 @@ async function endRoleScenario(): Promise<void> {
         }
       });
     } finally {
+      if (state.persistence.descriptor === undefined)
+        Reflect.deleteProperty(app.vault.adapter, 'write');
+      else Object.defineProperty(app.vault.adapter, 'write', state.persistence.descriptor);
       // Read activeLeaf directly. getLeaf(false) can select/create a different leaf
       // when this leaf is pinned or its view cannot navigate.
       // https://docs.obsidian.md/Reference/TypeScript+API/Workspace/activeLeaf

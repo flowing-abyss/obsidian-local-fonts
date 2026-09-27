@@ -70,6 +70,12 @@ jobs:
           sleep 1
           herbstluftwm &
           sleep 1
+          # The tests activate real Obsidian windows. The WM's default blocks
+          # application focus requests (only pager/taskbar requests are allowed).
+          # https://herbstluftwm.org/herbstluftwm.html#_settings
+          herbstclient get focus_stealing_prevention
+          herbstclient set focus_stealing_prevention false
+          herbstclient get focus_stealing_prevention
 
       - name: Run e2e tests
         if: ${{ !inputs.native_window_diagnostics }}

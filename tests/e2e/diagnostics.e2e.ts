@@ -10,7 +10,7 @@ import {
 
 type Role = 'text' | 'interface' | 'emoji';
 
-async function selectRole(role: Role, family: string): Promise<void> {
+async function selectRole(role: Role, family: string, waitForApplication = true): Promise<void> {
   const observed = await browser.executeObsidian(
     ({ app }, target: Role, value: string) => {
       const setting = (
@@ -66,6 +66,39 @@ async function selectRole(role: Role, family: string): Promise<void> {
       timeoutMsg: `Role ${role} did not save ${family}: ${JSON.stringify(observed)}`,
     },
   );
+  if (waitForApplication)
+    await browser.waitUntil(
+      async () =>
+        browser.executeObsidian(
+          ({ app }, target: Role, value: string) => {
+            const setting = (
+              app as unknown as {
+                setting: {
+                  tabContentContainer?: HTMLElement;
+                  activeTab?: { containerEl: HTMLElement };
+                };
+              }
+            ).setting;
+            const visible = setting.tabContentContainer;
+            const root =
+              visible !== undefined && visible.getClientRects().length > 0
+                ? visible
+                : setting.activeTab?.containerEl;
+            if (root === undefined) return false;
+            const style = root.ownerDocument.defaultView?.getComputedStyle(root);
+            // Fixture families do not collide with the private Emoji alias.
+            const expected = target === 'emoji' ? '__local-fonts-emoji__' : value;
+            return (
+              style
+                ?.getPropertyValue(target === 'interface' ? '--font-interface' : '--font-text')
+                .includes(expected) === true
+            );
+          },
+          role,
+          family,
+        ),
+      { timeout: 10_000, timeoutMsg: `Role ${role} CSS did not reach the settings document` },
+    );
 }
 
 async function check(roles: readonly string[]): Promise<string> {
@@ -170,6 +203,13 @@ async function assertReadableFallback(): Promise<void> {
   );
 }
 
+interface DeferredRoleSave {
+  plugin: { saveSettings(): Promise<void> };
+  descriptor: PropertyDescriptor | undefined;
+  original(): Promise<void>;
+  pending: Array<() => void>;
+}
+
 describe('visible font diagnostics', () => {
   it('follows Emoji-only, Text plus Emoji, precedence, and no open text surface', async () => {
     await withRoleScenario('diagnostics roles', async () => {
@@ -207,6 +247,63 @@ describe('visible font diagnostics', () => {
       expect(await check(['Text', 'Interface', 'Emoji'])).toContain(
         'No matching open surface to check',
       );
+    });
+  });
+
+  it('checks the applied Emoji selection while its settings write is pending', async () => {
+    await withRoleScenario('diagnostics during settings write', async () => {
+      await openRoleNote('reading');
+      await openRoleSettings();
+      await waitForSettingsRefresh();
+      await browser.executeObsidian(({ app }) => {
+        const plugin = (
+          app.plugins as unknown as {
+            plugins: Record<string, DeferredRoleSave['plugin']>;
+          }
+        ).plugins['local-fonts'];
+        if (plugin === undefined) throw new Error('Local Fonts is missing');
+        const deferred: DeferredRoleSave = {
+          plugin,
+          descriptor: Object.getOwnPropertyDescriptor(plugin, 'saveSettings'),
+          original: plugin.saveSettings.bind(plugin),
+          pending: [],
+        };
+        (window as Window & { __deferredRoleSave?: DeferredRoleSave }).__deferredRoleSave =
+          deferred;
+        plugin.saveSettings = () =>
+          new Promise<void>((resolve) => {
+            deferred.pending.push(resolve);
+          });
+      });
+      try {
+        // Use the actual dropdown and Check button while the save cannot finish.
+        await selectRole('emoji', 'Role Emoji A', false);
+        const result = await check(['Emoji']);
+        expect(result).toContain('Emoji: Role Emoji A — Local font loaded');
+        expect(result).not.toContain('Selected font is absent from the checked stack');
+        expect(
+          await browser.executeObsidian(
+            () =>
+              (window as Window & { __deferredRoleSave?: DeferredRoleSave }).__deferredRoleSave
+                ?.pending.length ?? 0,
+          ),
+        ).toBeGreaterThan(0);
+      } finally {
+        await browser.executeObsidian(async () => {
+          const owner = window as Window & { __deferredRoleSave?: DeferredRoleSave };
+          const deferred = owner.__deferredRoleSave;
+          if (deferred === undefined) return;
+          if (deferred.descriptor === undefined)
+            Reflect.deleteProperty(deferred.plugin, 'saveSettings');
+          else Object.defineProperty(deferred.plugin, 'saveSettings', deferred.descriptor);
+          try {
+            await deferred.original();
+          } finally {
+            for (const finish of deferred.pending) finish();
+            delete owner.__deferredRoleSave;
+          }
+        });
+      }
     });
   });
 

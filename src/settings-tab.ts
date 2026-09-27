@@ -530,8 +530,10 @@ export class LocalFontsSettingTab extends PluginSettingTab {
 
   private async commitRoleChange(role: RoleName, value: string): Promise<void> {
     this.plugin.settings.roles[role] = value === NONE ? null : value;
-    await this.plugin.saveSettings();
+    // Check reads the in-memory selection immediately. Keep its stylesheet in
+    // sync while persistence is pending; a rejected save still rejects this call.
     this.plugin.applyFonts();
+    await this.plugin.saveSettings();
   }
 
   private renderHardOverride(): void {

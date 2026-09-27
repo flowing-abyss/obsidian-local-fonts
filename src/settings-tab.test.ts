@@ -1108,6 +1108,36 @@ describe('LocalFontsSettingTab', () => {
     expect(applyFonts).toHaveBeenCalled();
   });
 
+  for (const path of ['legacy', 'declarative'] as const)
+    it(`applies a ${path} role change while persistence is still pending`, async () => {
+      let finishSave = (): void => {};
+      const pendingSave = new Promise<void>((resolve) => {
+        finishSave = resolve;
+      });
+      vi.spyOn(plugin, 'saveSettings').mockReturnValue(pendingSave);
+      const applyFonts = vi.spyOn(plugin, 'applyFonts').mockImplementation(() => undefined);
+      const commit =
+        path === 'legacy'
+          ? asTestable(tab).commitRoleChange('emoji', 'Probe Emoji')
+          : tab.setControlValue('role:emoji', 'Probe Emoji');
+      try {
+        expect(plugin.settings.roles.emoji).toBe('Probe Emoji');
+        expect(applyFonts).toHaveBeenCalledOnce();
+      } finally {
+        finishSave();
+        await commit;
+      }
+    });
+
+  it('keeps role persistence failures visible after applying the in-memory selection', async () => {
+    vi.spyOn(plugin, 'saveSettings').mockRejectedValue(new Error('settings write failed'));
+    const applyFonts = vi.spyOn(plugin, 'applyFonts').mockImplementation(() => undefined);
+    await expect(asTestable(tab).commitRoleChange('text', 'Probe Sans')).rejects.toThrow(
+      'settings write failed',
+    );
+    expect(applyFonts).toHaveBeenCalledOnce();
+  });
+
   it('clears the role when "leave the theme alone" is chosen', async () => {
     plugin.settings.roles.text = 'Probe Sans';
     vi.spyOn(plugin, 'saveSettings').mockResolvedValue();
