@@ -56,15 +56,10 @@ describe('local fonts apply in a real Obsidian', () => {
 
     const result = await browser.executeObsidian(async ({ app }) => {
       const workspace = app.workspace as unknown as {
-        openPopoutLeaf: () => { openFile: (file: unknown) => Promise<void> };
+        openLinkText: (link: string, source: string, pane: string) => Promise<unknown>;
         floatingSplit: { children: Array<{ win: Window }> };
       };
-      const leaf = workspace.openPopoutLeaf();
-      const file = app.vault.getFiles().find((f) => f.path === 'Welcome.md');
-      if (file === undefined) {
-        throw new Error('fixture note Welcome.md is missing from the vault');
-      }
-      await leaf.openFile(file);
+      await workspace.openLinkText('Welcome.md', '', 'window');
 
       try {
         // Obsidian clones the head into the new window asynchronously; poll for the
@@ -229,12 +224,7 @@ describe('local fonts apply in a real Obsidian', () => {
     // matches an explicit 'Probe Sans' request pixel-for-pixel, and differs from the
     // fallback — i.e. the cascade actually resolved to our font, not just to some font.
     await browser.executeObsidian(async ({ app }) => {
-      const file = app.vault.getFiles().find((f) => f.path === 'Welcome.md');
-      if (file === undefined) {
-        throw new Error('fixture note Welcome.md is missing from the vault');
-      }
-      const leaf = app.workspace.getLeaf(true);
-      await leaf.openFile(file);
+      await app.workspace.openLinkText('Welcome.md', '', true);
     });
 
     // A fixed sleep here would either flake on a slower machine or hide a real mounting
