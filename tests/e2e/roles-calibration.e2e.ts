@@ -212,6 +212,15 @@ describe('calibrated real font rendering', () => {
                 const original = workspace.setLayout;
                 const descriptor = Object.getOwnPropertyDescriptor(workspace, 'setLayout');
                 const originalClose = popout.close.bind(popout);
+                const native = (
+                  window as unknown as {
+                    electron: {
+                      remote: { BrowserWindow: { fromId(id: number): { isDestroyed(): boolean } } };
+                    };
+                  }
+                ).electron.remote.BrowserWindow.fromId(
+                  (popout as unknown as { electronWindow: { id: number } }).electronWindow.id,
+                );
                 const owner = window as Window & {
                   __rolePopoutWitness?: {
                     original: typeof original;
@@ -239,7 +248,8 @@ describe('calibrated real font rendering', () => {
                   if (descriptor === undefined) Reflect.deleteProperty(workspace, 'setLayout');
                   else Object.defineProperty(workspace, 'setLayout', descriptor);
                   const witness = owner.__rolePopoutWitness;
-                  if (witness !== undefined) witness.closedBeforeLayout = witness.closeCalled;
+                  if (witness !== undefined)
+                    witness.closedBeforeLayout = witness.closeCalled && native.isDestroyed();
                   await original.call(workspace, layout);
                 };
               });
@@ -311,7 +321,7 @@ describe('calibrated real font rendering', () => {
           expect(observation.existingOpen).toBe(true);
           expect(observation.existingRegistered).toBe(true);
           expect(observation.active).toBe(activeBefore);
-          expect(observation.cleanup).toEqual({
+          expect(observation.cleanup).toMatchObject({
             savedActive: activeBefore,
             active: activeBefore,
             attached: true,
@@ -320,6 +330,11 @@ describe('calibrated real font rendering', () => {
             root: activeRoot,
             windowOpen: true,
           });
+          expect(
+            observation.cleanup?.nativeTransitions.map((transition) => transition.operation),
+          ).toEqual(['closed', 'focused']);
+          for (const transition of observation.cleanup?.nativeTransitions ?? [])
+            expect(transition.complete).toBe(true);
           if (pinned) {
             expect(observation.unsafe?.before).toBe(activeBefore);
             expect(observation.unsafe?.selected).not.toBe(activeBefore);

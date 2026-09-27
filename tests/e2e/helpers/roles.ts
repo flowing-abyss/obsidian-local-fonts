@@ -47,6 +47,18 @@ export interface RoleCleanupObservation {
   navigable: boolean;
   root: 'floating' | 'main' | 'other';
   windowOpen: boolean;
+  nativeTransitions: Array<{ operation: string; durationMs: number; complete: boolean }>;
+}
+
+interface NativeRoleWindow {
+  isDestroyed(): boolean;
+  focus(): void;
+  once(event: 'closed', callback: () => void): void;
+  removeListener(event: 'closed', callback: () => void): void;
+}
+interface ElectronRoleWindow extends Window {
+  electronWindow: { id: number };
+  electron: { remote: { BrowserWindow: { fromId(id: number): NativeRoleWindow | null } } };
 }
 
 interface RoleState {
@@ -146,6 +158,56 @@ async function endRoleScenario(): Promise<void> {
     const state = testWindow.__roleScenario;
     if (state === undefined) return;
     const errors: unknown[] = [];
+    const nativeTransitions: RoleCleanupObservation['nativeTransitions'] = [];
+    const nativeWindow = (win: Window): NativeRoleWindow | null =>
+      (window as unknown as ElectronRoleWindow).electron.remote.BrowserWindow.fromId(
+        (win as ElectronRoleWindow).electronWindow.id,
+      );
+    const closeNative = async (win: Window): Promise<void> => {
+      const native = nativeWindow(win);
+      if (native === null || native.isDestroyed()) return;
+      const started = performance.now();
+      await new Promise<void>((resolve, reject) => {
+        native.once('closed', resolve);
+        try {
+          win.close();
+        } catch (error) {
+          native.removeListener('closed', resolve);
+          reject(new Error(String(error)));
+        }
+      });
+      nativeTransitions.push({
+        operation: 'closed',
+        durationMs: performance.now() - started,
+        complete: native.isDestroyed(),
+      });
+    };
+    const focusNative = async (win: Window): Promise<void> => {
+      const native = nativeWindow(win);
+      if (native === null) throw new Error('Restored native window disappeared');
+      const started = performance.now();
+      let complete: () => void = () => {};
+      const focused = (): void => {
+        win.removeEventListener('focus', focused);
+        complete();
+      };
+      await new Promise<void>((resolve, reject) => {
+        complete = resolve;
+        win.addEventListener('focus', focused);
+        try {
+          native.focus();
+          if (win.document.hasFocus()) focused();
+        } catch (error) {
+          win.removeEventListener('focus', focused);
+          reject(new Error(String(error)));
+        }
+      });
+      nativeTransitions.push({
+        operation: 'focused',
+        durationMs: performance.now() - started,
+        complete: win.document.hasFocus(),
+      });
+    };
     const clean = async (operation: () => void | Promise<void>): Promise<void> => {
       try {
         await operation();
@@ -173,9 +235,10 @@ async function endRoleScenario(): Promise<void> {
       for (const child of currentWindows.filter(
         (child) => !state.initialWindows.includes(child.win),
       ))
-        await clean(() => {
-          child.win.close();
-        });
+        // DOM close() initiates an asynchronous native close. Wait for the
+        // actual closed event before layout/focus restoration (Electron docs):
+        // https://www.electronjs.org/docs/latest/api/browser-window#event-closed
+        await clean(() => closeNative(child.win));
       for (const leaf of state.leaves)
         await clean(() => {
           leaf.detach();
@@ -214,18 +277,24 @@ async function endRoleScenario(): Promise<void> {
         try {
           await workspace.setLayout(layout);
         } finally {
-          // eslint-disable-next-line require-atomic-updates -- Restore the saved live root after setLayout deliberately replaces it; this disposable scenario owns the layout.
           workspace.floatingSplit = floating;
         }
         const active = layout['active'];
         if (typeof active === 'string') {
+          const savedLeaves: WorkspaceLeaf[] = [];
           workspace.iterateAllLeaves((leaf) => {
-            if ((leaf as unknown as { id: string }).id === active)
-              // Native container onFocus checks its focused document after 100 ms.
-              // Restore focus as well as selection so that callback cannot select
-              // another container's most recent leaf after cleanup returns.
-              workspace.setActiveLeaf(leaf, { focus: true });
+            if ((leaf as unknown as { id: string }).id === active) savedLeaves.push(leaf);
           });
+          const leaf = savedLeaves[0];
+          if (leaf === undefined) throw new Error(`Saved active leaf ${active} was not restored`);
+          const win = leaf.view.containerEl.ownerDocument.defaultView as ElectronRoleWindow | null;
+          if (win === null) throw new Error('Restored leaf has no native window');
+          // The public selection focus path has workspace/document focus gates;
+          // request and await native focus after close completion explicitly.
+          await focusNative(win);
+          // Commit selection after native activation, which can itself dispatch
+          // Obsidian focus handlers while the promise is pending.
+          workspace.setActiveLeaf(leaf, { focus: true });
         }
       });
     } finally {
@@ -255,6 +324,7 @@ async function endRoleScenario(): Promise<void> {
         navigable: active?.canNavigate() ?? false,
         root,
         windowOpen: active?.containerEl.ownerDocument.defaultView?.closed === false,
+        nativeTransitions,
       };
       delete testWindow.__roleScenario;
     }
