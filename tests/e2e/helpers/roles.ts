@@ -174,11 +174,34 @@ async function endRoleScenario(): Promise<void> {
           plugin.applyFonts();
         });
       }
-      await clean(() =>
-        (app.workspace as unknown as { setLayout(layout: unknown): Promise<void> }).setLayout(
-          state.layout,
-        ),
-      );
+      await clean(async () => {
+        const workspace = app.workspace as typeof app.workspace & {
+          setLayout(layout: unknown): Promise<void>;
+          floatingSplit: unknown;
+        };
+        if (state.initialWindows.length === 0) {
+          await workspace.setLayout(state.layout);
+          return;
+        }
+        // setLayout deserializes every saved floating window, even when its
+        // original is still open. Preserve that live root instead of cloning it.
+        const floating = workspace.floatingSplit;
+        const layout = { ...(state.layout as Record<string, unknown>) };
+        delete layout['floating'];
+        try {
+          await workspace.setLayout(layout);
+        } finally {
+          // eslint-disable-next-line require-atomic-updates -- Restore the saved live root after setLayout deliberately replaces it; this disposable scenario owns the layout.
+          workspace.floatingSplit = floating;
+        }
+        const active = layout['active'];
+        if (typeof active === 'string') {
+          workspace.iterateAllLeaves((leaf) => {
+            if ((leaf as unknown as { id: string }).id === active)
+              workspace.setActiveLeaf(leaf, { focus: false });
+          });
+        }
+      });
     } finally {
       delete testWindow.__roleScenario;
     }

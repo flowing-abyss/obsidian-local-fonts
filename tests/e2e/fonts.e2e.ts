@@ -1,5 +1,6 @@
 import { browser, expect } from '@wdio/globals';
 import { describe, it } from 'mocha';
+import { waitForFixtureFonts } from './helpers/ready.js';
 
 // The plugin appends its generated CSS to the `<style>` element Obsidian loaded
 // styles.css into, identified by the `--local-fonts-sheet` marker rule that file
@@ -15,17 +16,7 @@ describe('local fonts apply in a real Obsidian', () => {
   // Scanning the hidden folder happens off the critical path (onLayoutReady), so give
   // it a real chance to finish before any assertion runs.
   beforeEach(async () => {
-    await browser.waitUntil(
-      async () =>
-        browser.executeObsidian(() =>
-          Array.from(document.head.querySelectorAll('style')).some(
-            (el) =>
-              el.textContent.includes('--local-fonts-sheet') &&
-              el.textContent.includes('@font-face'),
-          ),
-        ),
-      { timeout: 10_000, timeoutMsg: 'plugin never injected any @font-face rules' },
-    );
+    await waitForFixtureFonts();
   });
 
   // The guard for the bug this delivery mechanism exists to fix. Everything else in

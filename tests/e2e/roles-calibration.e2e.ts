@@ -1,6 +1,8 @@
 import { browser, expect } from '@wdio/globals';
 import { describe, it } from 'mocha';
+import type { PluginSettings } from '../../src/settings.js';
 import { navigateRoleEditor } from './helpers/editor.js';
+import { waitForFixtureFonts } from './helpers/ready.js';
 import {
   measureSurface,
   openRoleNote,
@@ -86,6 +88,45 @@ describe('calibrated real font rendering', () => {
     });
   });
 
+  it('waits through deferred registration instead of accepting a stylesheet comment', async () => {
+    await withRoleScenario('deferred font readiness', async () => {
+      await browser.executeObsidian(({ app }) => {
+        const plugin = (
+          app.plugins as unknown as {
+            plugins: Record<string, { settings: PluginSettings; applyFonts(): void }>;
+          }
+        ).plugins['local-fonts'];
+        if (plugin === undefined) throw new Error('Missing fixture plugin');
+        const owner = window as Window & { __restoreRoleRegistration?: () => void };
+        const cache = plugin.settings.cache;
+        const timer = window.setTimeout(() => {
+          owner.__restoreRoleRegistration?.();
+        }, 1000);
+        owner.__restoreRoleRegistration = () => {
+          window.clearTimeout(timer);
+          plugin.settings.cache = cache;
+          plugin.applyFonts();
+          delete owner.__restoreRoleRegistration;
+        };
+        plugin.settings.cache = null;
+        plugin.applyFonts();
+      });
+      try {
+        await waitForFixtureFonts();
+        const loaded = await browser.executeObsidian(
+          async () => (await document.fonts.load("16px 'Probe Sans'", 'ABC')).length,
+        );
+        expect(loaded).toBeGreaterThan(0);
+      } finally {
+        await browser.executeObsidian(() => {
+          (
+            window as Window & { __restoreRoleRegistration?: () => void }
+          ).__restoreRoleRegistration?.();
+        });
+      }
+    });
+  });
+
   it('closes a newly opened pop-out when assertions fail before measurement', async function () {
     const isDesktop = await browser.executeObsidian(
       ({ obsidian }) => obsidian.Platform.isDesktopApp,
@@ -115,6 +156,10 @@ describe('calibrated real font rendering', () => {
         timeoutMsg: 'Pre-existing pop-out was not registered',
       });
       const before = await popoutCount();
+      const nativeHandlesBefore = await browser.getWindowHandles();
+      const activeBefore = await browser.executeObsidian(
+        ({ app }) => (app.workspace.getLeaf(false) as unknown as { id: string }).id,
+      );
       let failedAsExpected = false;
       try {
         await withRoleScenario('pop-out partial failure', async () => {
@@ -175,7 +220,11 @@ describe('calibrated real font rendering', () => {
         failedAsExpected = true;
       }
       expect(failedAsExpected).toBe(true);
-      const observation = await browser.executeObsidian(() => {
+      const nativeHandlesAfter = await browser.getWindowHandles();
+      nativeHandlesAfter.sort((left, right) => left.localeCompare(right));
+      nativeHandlesBefore.sort((left, right) => left.localeCompare(right));
+      expect(nativeHandlesAfter).toEqual(nativeHandlesBefore);
+      const observation = await browser.executeObsidian(({ app }) => {
         const owner = window as Window & {
           __roleExistingPopout?: Window;
           __rolePopoutWitness?: { closedBeforeLayout: boolean | null };
@@ -183,10 +232,16 @@ describe('calibrated real font rendering', () => {
         return {
           closedBeforeLayout: owner.__rolePopoutWitness?.closedBeforeLayout,
           existingOpen: owner.__roleExistingPopout?.closed === false,
+          existingRegistered: (
+            app.workspace as unknown as { floatingSplit: { children: Array<{ win: Window }> } }
+          ).floatingSplit.children.some((child) => child.win === owner.__roleExistingPopout),
+          active: (app.workspace.getLeaf(false) as unknown as { id: string }).id,
         };
       });
       expect(observation.closedBeforeLayout).toBe(true);
       expect(observation.existingOpen).toBe(true);
+      expect(observation.existingRegistered).toBe(true);
+      expect(observation.active).toBe(activeBefore);
       await browser.waitUntil(async () => (await popoutCount()) === before, {
         timeout: 10_000,
         timeoutMsg: 'New role pop-out remained open after scenario cleanup',
@@ -209,11 +264,13 @@ describe('calibrated real font rendering', () => {
           if (!witness.popout.closed) witness.popout.close = witness.originalClose;
           delete owner.__rolePopoutWitness;
         }
-        for (const child of (
-          app.workspace as unknown as { floatingSplit: { children: Array<{ win: Window }> } }
-        ).floatingSplit.children) {
-          if (!child.win.closed) child.win.close();
-        }
+        const windows = new Set(
+          (
+            app.workspace as unknown as { floatingSplit: { children: Array<{ win: Window }> } }
+          ).floatingSplit.children.map((child) => child.win),
+        );
+        if (owner.__roleExistingPopout !== undefined) windows.add(owner.__roleExistingPopout);
+        for (const win of windows) if (!win.closed) win.close();
         delete owner.__roleExistingPopout;
       });
     }

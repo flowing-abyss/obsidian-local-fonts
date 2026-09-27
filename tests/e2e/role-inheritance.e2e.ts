@@ -102,6 +102,7 @@ describe('native role inheritance and live changes', () => {
       );
       await matches(paragraph, 'Role Text');
       await matches('.suggestion-item', 'Role Interface');
+      expect(await pluginText()).toBe(before);
       await setNativeTestCss(
         "body {--font-text-theme:'Role Mono';} body.theme-dark {--font-text-theme:'Role Text';--font-interface-theme:'Role Interface';} body.theme-light {--font-text-theme:'Role Baseline';--font-interface-theme:'Role Baseline';}",
       );
@@ -120,6 +121,7 @@ describe('native role inheritance and live changes', () => {
         );
         await matches('.suggestion-item', 'Role Emoji A', '😀');
         await matches(paragraph, 'Role Emoji A', '😀');
+        expect(await pluginText()).toBe(before);
       }
       await browser.executeObsidian(() => {
         const sheet = new DOMParser()
@@ -132,18 +134,21 @@ describe('native role inheritance and live changes', () => {
       });
       try {
         await matches(paragraph, 'Role Headings');
+        expect(await pluginText()).toBe(before);
       } finally {
         await browser.executeObsidian(() => {
           document.querySelector('style[data-role-snippet]')?.remove();
         });
       }
       await matches(paragraph, 'Role Baseline');
+      expect(await pluginText()).toBe(before);
       await setNativeInlineFonts({
         '--font-text-override': "'Role Mono'",
         '--font-interface-override': "'Role Headings'",
       });
       await matches(paragraph, 'Role Mono');
       await matches('.suggestion-item', 'Role Headings');
+      expect(await pluginText()).toBe(before);
       await setNativeInlineFonts({
         '--font-text-override': null,
         '--font-interface-override': null,
@@ -175,6 +180,7 @@ describe('native role inheritance and live changes', () => {
         await matches(`.markdown-preview-view h${index + 1}`, family);
         await matches(`.markdown-preview-view h${index + 1}`, 'Role Emoji A', '😀');
       }
+      expect(await pluginText()).toBe(before);
       await setNativeTestCss("body {--font-text-theme:'Role Text';}");
       for (let level = 1; level <= 6; level++)
         await matches(`.markdown-preview-view h${level}`, 'Role Text');

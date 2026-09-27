@@ -34,9 +34,11 @@ describe('independent role documents', () => {
     }
     await withRoleScenario('existing and new pop-outs', async () => {
       await openRoleNote('reading');
-      await setNativeInlineFonts({ '--font-text-override': "'Role Baseline'" });
+      // Main baseline comes from the native test stylesheet. Core mirrors main
+      // inline variables into pop-outs, so per-window theme values stay local.
+      await setNativeInlineFonts({ '--font-text-override': null });
       await openRolePopout();
-      await setPopoutNativeFonts({ '--font-text-override': "'Role Text'" });
+      await setPopoutNativeFonts({ '--font-text-theme': "'Role Text'" });
       await matches('main', 'Role Baseline');
       await matches('popout', 'Role Text');
       await applyRoles({ ...EMPTY_ROLES, emoji: 'Role Emoji A' }, false);
@@ -45,9 +47,13 @@ describe('independent role documents', () => {
       await matches('main', 'Role Baseline');
       await matches('popout', 'Role Text');
       await openRolePopout();
-      await setPopoutNativeFonts({ '--font-text-override': "'Role Mono'" });
+      await setPopoutNativeFonts({ '--font-text-theme': "'Role Mono'" });
       await matches('popout', 'Role Mono');
       await matches('popout', 'Role Emoji A', '😀');
+      // Core mirrors Appearance override variables whenever the main body changes.
+      await browser.executeObsidian(() => {
+        document.body.classList.toggle('role-document-refresh');
+      });
       await selectRolePopout(0);
       await matches('popout', 'Role Text');
       await matches('popout', 'Role Emoji A', '😀');
@@ -77,8 +83,9 @@ describe('independent role documents', () => {
     }
     await withRoleScenario('style replacement and reopened settings', async () => {
       await openRoleNote('reading');
+      await setNativeInlineFonts({ '--font-text-override': null });
       await openRolePopout();
-      await setPopoutNativeFonts({ '--font-text-override': "'Role Mono'" });
+      await setPopoutNativeFonts({ '--font-text-theme': "'Role Mono'" });
       await applyRoles(
         { ...EMPTY_ROLES, interface: 'Role Interface', emoji: 'Role Emoji A' },
         false,
