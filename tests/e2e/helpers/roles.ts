@@ -1,6 +1,7 @@
 import { browser } from '@wdio/globals';
 import { quote } from '../../../src/fonts/family.js';
 import type { PluginSettings, RoleAssignments } from '../../../src/settings.js';
+import { captureRoleFailure } from './evidence.js';
 
 export type NoteMode = 'reading' | 'live' | 'source';
 export type TestDocument = 'main' | 'popout' | 'settings';
@@ -10,7 +11,7 @@ export interface GlyphObservation {
   stack: string;
   fontSize: string;
 }
-export interface FixtureFontPlugin {
+interface FixtureFontPlugin {
   settings: PluginSettings;
   applyFonts(): void;
   saveSettings(): Promise<void>;
@@ -39,6 +40,8 @@ interface RoleState {
   nativeStyle: HTMLStyleElement | null;
   leaves: Array<{ detach(): void }>;
   initialWindows: Window[];
+  popoutWindow: Window | null;
+  popoutStyles: Map<Window, string | null>;
   suggestion: { close(): void } | null;
   settingRow: HTMLElement | null;
   settingsDocument: Document | null;
@@ -46,7 +49,7 @@ interface RoleState {
 }
 
 /** Every renderer callback is self-contained: only arguments and { app, obsidian } cross the boundary. */
-export async function beginRoleScenario(): Promise<void> {
+async function beginRoleScenario(): Promise<void> {
   await browser.waitUntil(
     async () =>
       browser.executeObsidian(({ app }) => {
@@ -85,6 +88,8 @@ export async function beginRoleScenario(): Promise<void> {
         (workspace as unknown as { floatingSplit?: { children: Array<{ win: Window }> } })
           .floatingSplit?.children ?? []
       ).map((child) => child.win),
+      popoutWindow: null,
+      popoutStyles: new Map(),
       suggestion: null,
       settingRow: null,
       settingsDocument: null,
@@ -112,7 +117,7 @@ export async function beginRoleScenario(): Promise<void> {
   });
 }
 
-export async function endRoleScenario(): Promise<void> {
+async function endRoleScenario(): Promise<void> {
   await browser.executeObsidian(async ({ app }) => {
     const testWindow = window as Window & { __roleScenario?: RoleState };
     const state = testWindow.__roleScenario;
@@ -133,6 +138,12 @@ export async function endRoleScenario(): Promise<void> {
           (app as unknown as { setting: { close(): void } }).setting.close();
         });
       }
+      for (const [win, style] of state.popoutStyles)
+        await clean(() => {
+          if (win.closed) return;
+          if (style === null) win.document.body.removeAttribute('style');
+          else win.document.body.setAttribute('style', style);
+        });
       const currentWindows =
         (app.workspace as unknown as { floatingSplit?: { children: Array<{ win: Window }> } })
           .floatingSplit?.children ?? [];
@@ -231,36 +242,14 @@ export async function measureSurface(
   target: TestDocument = 'main',
 ): Promise<GlyphObservation> {
   const referenceFamilyCss = quote(referenceFamily);
-  if (target === 'popout') {
-    await browser.waitUntil(
-      async () =>
-        browser.executeObsidian(({ app }) => {
-          const state = (window as Window & { __roleScenario?: RoleState }).__roleScenario;
-          if (state === undefined) throw new Error('No role scenario is active');
-          const windows =
-            (app.workspace as unknown as { floatingSplit?: { children: Array<{ win: Window }> } })
-              .floatingSplit?.children ?? [];
-          return windows.some((child) => !state.initialWindows.includes(child.win));
-        }),
-      { timeout: 10_000, timeoutMsg: 'No new pop-out was opened by this role scenario' },
-    );
-  }
   await browser.waitUntil(
     async () =>
       browser.executeObsidian(
-        ({ app }, css: string, text: string, destination: TestDocument) => {
+        (_, css: string, text: string, destination: TestDocument) => {
           const state = (window as Window & { __roleScenario?: RoleState }).__roleScenario;
           let doc: Document | null | undefined = document;
           if (destination === 'settings') doc = state?.settingsDocument;
-          if (destination === 'popout') {
-            const windows =
-              (app.workspace as unknown as { floatingSplit?: { children: Array<{ win: Window }> } })
-                .floatingSplit?.children ?? [];
-            const opened = windows.find(
-              (child) => state !== undefined && !state.initialWindows.includes(child.win),
-            );
-            doc = opened?.win.document;
-          }
+          if (destination === 'popout') doc = state?.popoutWindow?.document;
           return (
             doc !== undefined &&
             doc !== null &&
@@ -280,7 +269,7 @@ export async function measureSurface(
   );
   return browser.executeObsidian(
     async (
-      { app },
+      _,
       request: {
         css: string;
         text: string;
@@ -293,15 +282,7 @@ export async function measureSurface(
       const state = (window as Window & { __roleScenario?: RoleState }).__roleScenario;
       let doc: Document | null | undefined = document;
       if (destination === 'settings') doc = state?.settingsDocument;
-      if (destination === 'popout') {
-        const windows =
-          (app.workspace as unknown as { floatingSplit?: { children: Array<{ win: Window }> } })
-            .floatingSplit?.children ?? [];
-        const opened = windows.find(
-          (child) => state !== undefined && !state.initialWindows.includes(child.win),
-        );
-        doc = opened?.win.document;
-      }
+      if (destination === 'popout') doc = state?.popoutWindow?.document;
       if (doc === undefined || doc === null)
         throw new Error(`No ${destination} document was opened by this role scenario`);
       const element = Array.from(doc.querySelectorAll(css)).find(
@@ -471,13 +452,63 @@ export async function openRoleSettings(): Promise<void> {
 }
 
 export async function withRoleScenario(
-  _testName: string,
+  testName: string,
   assertions: () => Promise<void>,
 ): Promise<void> {
   try {
     await beginRoleScenario();
     await assertions();
+  } catch (error) {
+    await captureRoleFailure(testName).catch(() => undefined);
+    throw error;
   } finally {
     await endRoleScenario();
   }
+}
+
+/** Select the newly created window by identity, even when another role pop-out exists. */
+export async function openRolePopout(): Promise<void> {
+  await browser.executeObsidian(async ({ app }) => {
+    const state = (window as Window & { __roleScenario?: RoleState }).__roleScenario;
+    if (state === undefined) throw new Error('No role scenario is active');
+    const workspace = app.workspace as unknown as {
+      floatingSplit: { children: Array<{ win: Window }> };
+    };
+    const before = workspace.floatingSplit.children.map((child) => child.win);
+    await app.workspace.openLinkText('Role title ABCАБя0123 😀 ☀️ 👩‍💻.md', '', 'window');
+    const created = workspace.floatingSplit.children.find((child) => !before.includes(child.win));
+    if (created === undefined) throw new Error('Role pop-out did not create a new window');
+    state.popoutWindow = created.win;
+    state.popoutStyles.set(created.win, created.win.document.body.getAttribute('style'));
+    const leaf = app.workspace
+      .getLeavesOfType('markdown')
+      .find((candidate) => candidate.view.containerEl.ownerDocument === created.win.document);
+    if (leaf === undefined) throw new Error('New pop-out has no Markdown leaf');
+    const current = leaf.getViewState();
+    await leaf.setViewState({ ...current, state: { ...current.state, mode: 'preview' } });
+  });
+}
+
+export async function setPopoutNativeFonts(values: Record<string, string | null>): Promise<void> {
+  await browser.executeObsidian((_, entries: Record<string, string | null>) => {
+    const win = (window as Window & { __roleScenario?: RoleState }).__roleScenario?.popoutWindow;
+    if (win === undefined || win === null || win.closed)
+      throw new Error('No selected role pop-out');
+    for (const [name, value] of Object.entries(entries)) {
+      if (!name.startsWith('--font-')) throw new Error(`Unexpected native font property ${name}`);
+      if (value === null) win.document.body.style.removeProperty(name);
+      else win.document.body.style.setProperty(name, value);
+    }
+  }, values);
+}
+
+/** Switch between windows already created by this scenario without consulting the active leaf. */
+export async function selectRolePopout(index: number): Promise<void> {
+  await browser.executeObsidian((_, requested: number) => {
+    const state = (window as Window & { __roleScenario?: RoleState }).__roleScenario;
+    const win = [...(state?.popoutStyles.keys() ?? [])][requested];
+    if (state === undefined || win === undefined || win.closed)
+      throw new Error('Unknown role pop-out index');
+    state.popoutWindow = win;
+  }, index);
 }

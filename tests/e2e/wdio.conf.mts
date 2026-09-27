@@ -58,6 +58,7 @@ export const config: WebdriverIO.Config = {
   waitforInterval: 250,
   waitforTimeout: 5 * 1000,
   logLevel: 'warn',
+  outputDir: path.resolve(repoRoot, 'tests/e2e/wdio-logs'),
 
   cacheDir,
 

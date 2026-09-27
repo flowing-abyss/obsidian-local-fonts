@@ -1,5 +1,6 @@
 import { browser, expect } from '@wdio/globals';
 import { describe, it } from 'mocha';
+import { navigateRoleEditor } from './helpers/editor.js';
 import {
   measureSurface,
   openRoleNote,
@@ -71,8 +72,9 @@ describe('calibrated real font rendering', () => {
     await withRoleScenario('editor and suggestion baseline', async () => {
       for (const mode of ['live', 'source'] as const) {
         await openRoleNote(mode);
+        await navigateRoleEditor('ABCАБя0123');
         const paragraph = await measureSurface(
-          '.workspace-leaf.mod-active .cm-line',
+          '.workspace-leaf.mod-active .cm-line.cm-active',
           'ABCАБя0123',
           'Role Baseline',
         );

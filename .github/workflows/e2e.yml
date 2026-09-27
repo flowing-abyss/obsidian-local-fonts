@@ -70,6 +70,13 @@ jobs:
           # macOS GitHub runners are lower-memory; keep desktop instances modest everywhere.
           WDIO_MAX_INSTANCES: 2
 
+      - name: Upload failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-desktop-${{ matrix.os }}
+          path: tests/e2e/wdio-logs/
+
   android:
     strategy:
       fail-fast: false
@@ -139,6 +146,13 @@ jobs:
           script: pnpm run test:e2e:android
         env:
           OBSIDIAN_VERSIONS: ${{ matrix.obsidian-version }}
+
+      - name: Upload failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-android-${{ matrix.obsidian-version }}
+          path: tests/e2e/wdio-logs/
 
   check:
     if: always()

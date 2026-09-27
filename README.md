@@ -121,10 +121,12 @@ carrying both. Any combination of those works.
 
 ## Limitations
 
-The test suite runs on every release against Obsidian 1.0.3 and the latest stable
-release, covering Windows, macOS, Linux and Android on real devices. iOS has no
-automation available; Check can report loading and requested stack order there, but
-the final glyph rendering still needs visual inspection on an iOS device.
+The desktop test matrix covers Obsidian 1.0.3 and the latest stable release on
+Windows, macOS and Linux. Android tests drive the real app in an emulator, covering
+Obsidian 1.8.10 and the latest stable release. iOS requires the
+[real-device verification procedure](tests/manual/font-roles-ios.md); Check can
+report loading and requested stack order, but final glyph rendering still needs
+inspection on an iOS device.
 
 Emoji on iOS depend on which colour formats your files carry. When they fail, the card
 shows which format is missing.

@@ -1,5 +1,6 @@
 import { browser, expect } from '@wdio/globals';
 import { describe, it } from 'mocha';
+import { navigateRoleEditor } from './helpers/editor.js';
 import {
   applyRoles,
   closeRoleSuggestion,
@@ -71,28 +72,6 @@ async function assertSurface(
     }
 }
 
-async function scrollEditorLine(pattern: string): Promise<void> {
-  await browser.executeObsidian(({ app }, prefix: string) => {
-    const view = app.workspace.getLeaf(false).view as unknown as {
-      editor: {
-        getValue(): string;
-        setCursor(position: { line: number; ch: number }): void;
-        scrollIntoView(
-          range: { from: { line: number; ch: number }; to: { line: number; ch: number } },
-          center: boolean,
-        ): void;
-      };
-    };
-    const line = view.editor
-      .getValue()
-      .split('\n')
-      .findIndex((text) => text.startsWith(prefix));
-    if (line < 0) throw new Error(`Missing fixture line ${prefix}`);
-    view.editor.setCursor({ line, ch: 0 });
-    view.editor.scrollIntoView({ from: { line, ch: 0 }, to: { line, ch: 1 } }, true);
-  }, pattern);
-}
-
 describe('real consumers of independent roles', () => {
   for (const selected of cases)
     for (const hard of [false, true]) {
@@ -117,18 +96,18 @@ describe('real consumers of independent roles', () => {
           if (roles.headings !== null) await assertSurface('.inline-title', roles.headings, emoji);
           for (const mode of ['live', 'source'] as const) {
             await openRoleNote(mode);
-            await scrollEditorLine(ordinary);
+            await navigateRoleEditor(ordinary);
             await assertSurface('.workspace-leaf.mod-active .cm-line.cm-active', text, emoji);
-            await scrollEditorLine('Inline');
+            await navigateRoleEditor('Inline');
             await assertSurface('.workspace-leaf.mod-active .cm-inline-code', mono, emoji);
-            await scrollEditorLine('```');
+            await navigateRoleEditor('```');
             await assertSurface(
               '.workspace-leaf.mod-active .cm-line.HyperMD-codeblock',
               mono,
               emoji,
             );
             for (const level of [1, 2, 3, 4, 5, 6]) {
-              await scrollEditorLine(`${'#'.repeat(level)} `);
+              await navigateRoleEditor(`${'#'.repeat(level)} `);
               await assertSurface(
                 `.workspace-leaf.mod-active .HyperMD-header-${level}`,
                 roles.headings ?? text,
