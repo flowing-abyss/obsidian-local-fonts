@@ -40,7 +40,6 @@ interface RoleState {
   notePath: string | null;
   leaves: Array<{ detach(): void }>;
   initialWindows: Window[];
-  windows: Window[];
   suggestion: { close(): void } | null;
   settingRow: HTMLElement | null;
   settingsDocument: Document | null;
@@ -88,7 +87,6 @@ export async function beginRoleScenario(): Promise<void> {
         (workspace as unknown as { floatingSplit?: { children: Array<{ win: Window }> } })
           .floatingSplit?.children ?? []
       ).map((child) => child.win),
-      windows: [],
       suggestion: null,
       settingRow: null,
       settingsDocument: null,
@@ -141,9 +139,14 @@ export async function endRoleScenario(): Promise<void> {
           (app as unknown as { setting: { close(): void } }).setting.close();
         });
       }
-      for (const child of state.windows)
+      const currentWindows =
+        (app.workspace as unknown as { floatingSplit?: { children: Array<{ win: Window }> } })
+          .floatingSplit?.children ?? [];
+      for (const child of currentWindows.filter(
+        (child) => !state.initialWindows.includes(child.win),
+      ))
         await clean(() => {
-          child.close();
+          child.win.close();
         });
       for (const leaf of state.leaves)
         await clean(() => {
@@ -239,6 +242,20 @@ export async function measureSurface(
   target: TestDocument = 'main',
 ): Promise<GlyphObservation> {
   const referenceFamilyCss = quote(referenceFamily);
+  if (target === 'popout') {
+    await browser.waitUntil(
+      async () =>
+        browser.executeObsidian(({ app }) => {
+          const state = (window as Window & { __roleScenario?: RoleState }).__roleScenario;
+          if (state === undefined) throw new Error('No role scenario is active');
+          const windows =
+            (app.workspace as unknown as { floatingSplit?: { children: Array<{ win: Window }> } })
+              .floatingSplit?.children ?? [];
+          return windows.some((child) => !state.initialWindows.includes(child.win));
+        }),
+      { timeout: 10_000, timeoutMsg: 'No new pop-out was opened by this role scenario' },
+    );
+  }
   await browser.waitUntil(
     async () =>
       browser.executeObsidian(
@@ -253,10 +270,7 @@ export async function measureSurface(
             const opened = windows.find(
               (child) => state !== undefined && !state.initialWindows.includes(child.win),
             );
-            const selected = opened ?? windows[0];
-            doc = selected?.win.document;
-            if (opened !== undefined && state !== undefined && !state.windows.includes(opened.win))
-              state.windows.push(opened.win);
+            doc = opened?.win.document;
           }
           return (
             doc !== undefined &&
@@ -295,13 +309,10 @@ export async function measureSurface(
         const opened = windows.find(
           (child) => state !== undefined && !state.initialWindows.includes(child.win),
         );
-        const selected = opened ?? windows[0];
-        doc = selected?.win.document;
-        if (opened !== undefined && state !== undefined && !state.windows.includes(opened.win))
-          state.windows.push(opened.win);
+        doc = opened?.win.document;
       }
       if (doc === undefined || doc === null)
-        throw new Error(`No ${destination} document was opened`);
+        throw new Error(`No ${destination} document was opened by this role scenario`);
       const element = Array.from(doc.querySelectorAll(css)).find((el) =>
         el.textContent.includes(text),
       );
