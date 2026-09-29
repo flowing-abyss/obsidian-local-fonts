@@ -1,5 +1,5 @@
 import { browser } from '@wdio/globals';
-import type { DataAdapter, WorkspaceLeaf } from 'obsidian';
+import type { App, DataAdapter, WorkspaceLeaf } from 'obsidian';
 import { quote } from '../../../src/fonts/family.js';
 import type { PluginSettings, RoleAssignments } from '../../../src/settings.js';
 import { captureRoleFailure } from './evidence.js';
@@ -51,6 +51,15 @@ export interface RoleCleanupObservation {
   nativeTransitions: Array<{ operation: string; durationMs: number; complete: boolean }>;
 }
 
+interface RoleCleanupResult {
+  cleanupError: string | null;
+  observation?: RoleCleanupObservation;
+  trace?: Array<Record<string, unknown>>;
+}
+interface RoleCleanupTask {
+  result: RoleCleanupResult | null;
+}
+
 interface NativeRoleWindow {
   isDestroyed(): boolean;
   isFocused(): boolean;
@@ -65,7 +74,6 @@ interface ElectronRoleWindow extends Window {
 }
 
 interface RoleState {
-  cleanupTrace?: Array<Record<string, unknown>>;
   originalPlugin: FixtureFontPlugin;
   persistence: {
     path: string;
@@ -111,7 +119,12 @@ async function beginRoleScenario(): Promise<void> {
     { timeout: 20_000, timeoutMsg: 'Role fixture scan or marked stylesheet did not complete' },
   );
   await browser.executeObsidian(async ({ app }) => {
-    const testWindow = window as Window & { __roleScenario?: RoleState };
+    const testWindow = window as Window & {
+      __roleScenario?: RoleState;
+      __roleCleanupTask?: RoleCleanupTask;
+    };
+    if (testWindow.__roleCleanupTask !== undefined)
+      throw new Error('The previous role cleanup has not been collected');
     if (testWindow.__roleScenario !== undefined)
       throw new Error('A role scenario is already active');
     const plugin = (
@@ -187,21 +200,27 @@ async function beginRoleScenario(): Promise<void> {
   });
 }
 
-async function endRoleScenario(): Promise<void> {
+/** Serialized by executeObsidian; this function must remain self-contained. */
+function startRoleCleanup({ app }: { app: App }): void {
+  const testWindow = window as Window & {
+    __roleScenario?: RoleState;
+    __roleCleanupTask?: RoleCleanupTask;
+    __roleCleanupObservation?: RoleCleanupObservation;
+    __roleCleanupTrace?: Array<Record<string, unknown>>;
+  };
+  // Claim before starting: a retried launch must observe the same task, never
+  // run teardown twice. Completion only mutates this captured task object.
+  if (testWindow.__roleCleanupTask !== undefined) return;
+  const task: RoleCleanupTask = { result: null };
+  testWindow.__roleCleanupTask = task;
   // eslint-disable-next-line complexity -- Self-contained renderer cleanup also snapshots the native restoration boundary.
-  const result = await browser.executeObsidian(async ({ app }) => {
-    const testWindow = window as Window & {
-      __roleScenario?: RoleState;
-      __roleCleanupObservation?: RoleCleanupObservation;
-      __roleCleanupTrace?: Array<Record<string, unknown>>;
-    };
+  const run = async (): Promise<RoleCleanupResult> => {
     const state = testWindow.__roleScenario;
-    if (state === undefined) return;
+    if (state === undefined) return { cleanupError: null };
     const errors: unknown[] = [];
+    let observation: RoleCleanupObservation | undefined;
     const nativeTransitions: RoleCleanupObservation['nativeTransitions'] = [];
-    // Keep the first attempt's stages if WebDriver retries a timed-out command.
-    const trace = (state.cleanupTrace ??= []);
-    const reentered = trace.length > 0;
+    const trace: Array<Record<string, unknown>> = [];
     testWindow.__roleCleanupTrace = trace;
     const record = (stage: string, details: Record<string, unknown> = {}): void => {
       if (trace.length >= 40) return;
@@ -227,7 +246,7 @@ async function endRoleScenario(): Promise<void> {
         trace.push({ stage, time: Date.now(), probeError: String(error) });
       }
     };
-    record(reentered ? 'command reentered' : 'started');
+    record('started');
     const nativeWindow = (win: Window): NativeRoleWindow | null =>
       (window as unknown as ElectronRoleWindow).electron.remote.BrowserWindow.fromId(
         (win as ElectronRoleWindow).electronWindow.id,
@@ -464,7 +483,7 @@ async function endRoleScenario(): Promise<void> {
       let root: RoleCleanupObservation['root'] = 'other';
       if (active?.getRoot() === workspace.floatingSplit) root = 'floating';
       if (active?.getRoot() === workspace.rootSplit) root = 'main';
-      testWindow.__roleCleanupObservation = {
+      observation = {
         savedActive: (state.layout as { active?: string }).active ?? null,
         active: active?.id ?? null,
         attached: workspace.isAttached(active),
@@ -477,19 +496,57 @@ async function endRoleScenario(): Promise<void> {
       delete testWindow.__roleScenario;
       record('finished');
     }
-    // WebDriver retries rejected execute commands. Return the completed cleanup
-    // result, then propagate its failure in Node so a retry cannot hide it.
-    // Avoid a top-level `error` key too: WebDriver interprets it as a failed
-    // protocol response even when the execute command itself succeeded.
     return {
-      observation: testWindow.__roleCleanupObservation,
+      observation,
       trace,
       cleanupError:
         errors.length > 0 ? `Role scenario cleanup failed: ${errors.map(String).join('; ')}` : null,
     };
+  };
+  void run().then(
+    (result) => {
+      if (result.observation !== undefined)
+        testWindow.__roleCleanupObservation = result.observation;
+      task.result = result;
+    },
+    (error: unknown) => {
+      task.result = { cleanupError: `Role scenario cleanup failed: ${String(error)}` };
+    },
+  );
+}
+
+async function endRoleScenario(): Promise<void> {
+  // Keep native window teardown outside a pending execute/sync command. On the
+  // oldest Linux runtime, closing a pop-out can stall that command and prevent
+  // subsequent diagnostics from running. Short polls keep the driver available.
+  await browser.executeObsidian(startRoleCleanup);
+  const result = await browser.waitUntil(
+    async () => {
+      const status = await browser.executeObsidian(() => {
+        const owner = window as Window & {
+          __roleCleanupTask?: RoleCleanupTask;
+          __roleCleanupTrace?: Array<Record<string, unknown>>;
+        };
+        const task = owner.__roleCleanupTask;
+        if (task === undefined)
+          return { result: { cleanupError: 'Role cleanup task disappeared' }, stage: null };
+        const trace = owner.__roleCleanupTrace ?? [];
+        // Include the last stage in WebDriver's command log even while pending.
+        return { result: task.result, stage: trace[trace.length - 1] ?? null };
+      });
+      return status.result ?? false;
+    },
+    { timeout: 50_000, timeoutMsg: 'Role cleanup did not finish; inspect its last logged stage' },
+  );
+  // Collect first, clear separately: a lost poll response must not lose a
+  // terminal failure. A pending task survives timeout and blocks new scenarios.
+  await browser.executeObsidian(() => {
+    const owner = window as Window & { __roleCleanupTask?: RoleCleanupTask };
+    if (owner.__roleCleanupTask?.result != null) delete owner.__roleCleanupTask;
   });
-  if (result?.cleanupError !== null && result?.cleanupError !== undefined)
-    throw new Error(result.cleanupError);
+  // Propagate in Node. Rejected execute commands (or top-level `error` keys)
+  // invite protocol retries, which could otherwise hide a cleanup failure.
+  if (result.cleanupError !== null) throw new Error(result.cleanupError);
 }
 
 export async function applyRoles(roles: RoleAssignments, hardOverride: boolean): Promise<void> {

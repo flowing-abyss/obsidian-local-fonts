@@ -10,7 +10,89 @@ interface CloseCancellation {
   listenersBefore: number;
 }
 
+interface HeldClose {
+  win: Window;
+  originalClose: () => void;
+  requested: boolean;
+}
+
 describe('native lifecycle failure cleanup', () => {
+  it('keeps the driver available to observe and release a pending native close', async function () {
+    const desktop = await browser.executeObsidian(({ obsidian }) => obsidian.Platform.isDesktopApp);
+    if (!desktop) this.skip();
+    const handlesBefore = await browser.getWindowHandles();
+    let ready: () => void = () => {};
+    const prepared = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    // Observe failure immediately, including while an independent command is
+    // checking the pending native transition.
+    const cleanup = withRoleScenario('observable native close', async () => {
+      await openRolePopout();
+      await browser.executeObsidian(() => {
+        const owner = window as unknown as Window & {
+          __roleScenario: { popoutWindow: Window };
+          __heldRoleClose?: HeldClose;
+        };
+        const win = owner.__roleScenario.popoutWindow;
+        const held = { win, originalClose: win.close.bind(win), requested: false };
+        owner.__heldRoleClose = held;
+        win.close = () => {
+          held.requested = true;
+        };
+      });
+      ready();
+    }).then(
+      () => null,
+      (error: unknown) => String(error),
+    );
+    try {
+      await Promise.race([
+        prepared,
+        cleanup.then((failure) => {
+          throw new Error(failure ?? 'Scenario ended before the close was held');
+        }),
+      ]);
+      await browser.waitUntil(
+        async () =>
+          browser.executeObsidian(
+            () => (window as Window & { __heldRoleClose?: HeldClose }).__heldRoleClose?.requested,
+          ),
+        { timeout: 20_000, timeoutMsg: 'Scenario cleanup did not request the held close' },
+      );
+      const pending = await browser.executeObsidian(() => {
+        const owner = window as Window & {
+          __roleScenario?: unknown;
+          __heldRoleClose?: HeldClose;
+          __roleCleanupTrace?: Array<{ stage: string }>;
+        };
+        const trace = owner.__roleCleanupTrace ?? [];
+        return {
+          active: owner.__roleScenario !== undefined,
+          open: owner.__heldRoleClose?.win.closed === false,
+          stage: trace[trace.length - 1]?.stage,
+        };
+      });
+      expect(pending).toEqual({ active: true, open: true, stage: 'close requested' });
+    } finally {
+      await browser.executeObsidian(() => {
+        const owner = window as Window & { __heldRoleClose?: HeldClose };
+        const held = owner.__heldRoleClose;
+        if (held === undefined) return;
+        if (!held.win.closed) {
+          held.win.close = held.originalClose;
+          held.originalClose();
+        }
+        delete owner.__heldRoleClose;
+      });
+      await cleanup;
+    }
+    expect(await cleanup).toBeNull();
+    const handlesAfter = await browser.getWindowHandles();
+    expect(handlesAfter).toHaveLength(handlesBefore.length);
+    expect(handlesAfter).toEqual(expect.arrayContaining(handlesBefore));
+  });
+
   it('bounds a canceled close and removes its listener before the next scenario', async function () {
     const desktop = await browser.executeObsidian(({ obsidian }) => obsidian.Platform.isDesktopApp);
     if (!desktop) this.skip();
