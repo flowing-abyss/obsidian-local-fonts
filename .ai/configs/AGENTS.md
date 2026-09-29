@@ -20,6 +20,7 @@ Obsidian ships a CLI for driving a _running_ Obsidian instance from the terminal
 
 ## Constraints nothing else catches
 
+- `docs/` stays local-only (gitignored) — never commit or push it.
 - `id` in `manifest.json` is permanent once released — never rename it.
 - Releasing means bumping `version` in **both** `manifest.json` and `versions.json`; the release tag must match `manifest.json`'s version exactly (no leading `v`).
 - Any network call or external service needs explicit opt-in and disclosure (README + settings) — default is local/offline. Never fetch-and-eval remote code or self-update outside normal releases.
