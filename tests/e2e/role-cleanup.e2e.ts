@@ -20,6 +20,16 @@ interface TestPlugin {
 }
 
 async function installProbe(): Promise<void> {
+  await browser.waitUntil(
+    async () =>
+      browser.executeObsidian(({ app }) => {
+        const plugin = (app.plugins as unknown as { plugins: Record<string, TestPlugin> }).plugins[
+          'local-fonts'
+        ];
+        return plugin?.settings.cache != null;
+      }),
+    { timeout: 20_000, timeoutMsg: 'Initial font scan did not complete' },
+  );
   await browser.executeObsidian(async ({ app }) => {
     const plugin = (app.plugins as unknown as { plugins: Record<string, TestPlugin> }).plugins[
       'local-fonts'
@@ -71,35 +81,39 @@ async function savedSettings(): Promise<PluginSettings> {
 }
 
 describe('role scenario persistence rollback', () => {
-  it('does not write plugin data for a rendering-only scenario', async () => {
-    await installProbe();
-    try {
-      await withRoleScenario('no persistence', async () => {
-        await browser.executeObsidian(({ app }) => {
-          const plugin = (app.plugins as unknown as { plugins: Record<string, TestPlugin> })
-            .plugins['local-fonts'];
-          if (plugin === undefined) throw new Error('Missing fixture plugin');
-          plugin.settings.roles.text = 'Role Text';
-          plugin.applyFonts();
+  for (const rescan of [false, true])
+    it(`does not write plugin data for ${rescan ? 'an unchanged rescan' : 'a rendering-only scenario'}`, async () => {
+      await installProbe();
+      try {
+        const before = await snapshotSettings();
+        await withRoleScenario('no persistence', async () => {
+          await browser.executeObsidian(async ({ app }, scan: boolean) => {
+            const plugin = (app.plugins as unknown as { plugins: Record<string, TestPlugin> })
+              .plugins['local-fonts'];
+            if (plugin === undefined) throw new Error('Missing fixture plugin');
+            plugin.settings.roles.text = 'Role Text';
+            plugin.applyFonts();
+            if (scan) await plugin.rescan({ force: true });
+          }, rescan);
         });
-      });
-      expect(
-        await browser.executeObsidian(
-          () =>
-            (window as unknown as Window & { __persistenceProbe: PersistenceProbe })
-              .__persistenceProbe.writes,
-        ),
-      ).toBe(0);
-    } finally {
-      await restoreProbe();
-    }
-  });
+        expect(await savedSettings()).toEqual(before);
+        expect(
+          await browser.executeObsidian(
+            () =>
+              (window as unknown as Window & { __persistenceProbe: PersistenceProbe })
+                .__persistenceProbe.writes,
+          ),
+        ).toBe(0);
+      } finally {
+        await restoreProbe();
+      }
+    });
 
   for (const reload of [false, true])
     it(`restores data persisted by ${reload ? 'a fresh' : 'the current'} plugin instance`, async () => {
-      const before = await snapshotSettings();
       await installProbe();
       try {
+        const before = await snapshotSettings();
         await withRoleScenario('persisted rollback', async () => {
           await browser.executeObsidian(async ({ app }, restart: boolean) => {
             const manager = app.plugins as unknown as {
@@ -127,9 +141,9 @@ describe('role scenario persistence rollback', () => {
 
   for (const operation of ['rejected save', 'pending rescan'] as const)
     it(`restores settings after a ${operation}`, async () => {
-      const before = await snapshotSettings();
       await installProbe();
       try {
+        const before = await snapshotSettings();
         await withRoleScenario(operation, async () => {
           await browser.executeObsidian(async ({ app }, action: string) => {
             const probe = (window as unknown as Window & { __persistenceProbe: PersistenceProbe })
@@ -139,6 +153,9 @@ describe('role scenario persistence rollback', () => {
             if (plugin === undefined) throw new Error('Missing fixture plugin');
             plugin.settings.roles.text = 'Role Text';
             if (action === 'pending rescan') {
+              // Rebuild a missing cache so this scan really has something to persist.
+              // An unchanged forced rescan intentionally leaves data.json alone.
+              plugin.settings.cache = null;
               probe.pending = plugin.rescan({ force: true });
             } else {
               const original = probe.original;
@@ -167,9 +184,9 @@ describe('role scenario persistence rollback', () => {
     });
 
   it('drains a save still in flight before restoring persisted settings', async () => {
-    const before = await snapshotSettings();
     await installProbe();
     try {
+      const before = await snapshotSettings();
       await withRoleScenario('pending persistence rollback', async () => {
         await browser.executeObsidian(({ app }) => {
           const probe = (window as unknown as Window & { __persistenceProbe: PersistenceProbe })

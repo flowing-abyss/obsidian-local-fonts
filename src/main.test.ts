@@ -1,9 +1,14 @@
-import type { PluginManifest } from 'obsidian';
+import { requireApiVersion, type PluginManifest } from 'obsidian';
 import { App } from 'obsidian-test-mocks/obsidian';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFixture } from '../tests/fixtures.js';
 import LocalFontsPlugin from './main.js';
 import { DEFAULT_SETTINGS } from './settings.js';
+
+vi.mock('obsidian', async () => {
+  const api = await import('obsidian-test-mocks/obsidian');
+  return { ...api, requireApiVersion: vi.fn(api.requireApiVersion) };
+});
 
 const manifest: PluginManifest = {
   id: 'local-fonts',
@@ -784,7 +789,8 @@ describe('LocalFontsPlugin', () => {
         readFixture('probe-sans/probe-sans-400.ttf'),
       );
       await plugin.onload();
-      vi.spyOn(plugin, 'saveData')
+      const save = vi
+        .spyOn(plugin, 'saveData')
         .mockRejectedValueOnce(new Error('disk exploded'))
         .mockResolvedValue();
 
@@ -793,6 +799,7 @@ describe('LocalFontsPlugin', () => {
 
       await expect(first).rejects.toThrow('disk exploded');
       await expect(second).resolves.toBeUndefined();
+      expect(save).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -808,6 +815,32 @@ describe('LocalFontsPlugin', () => {
 
     expect(plugin.lastScanFailure()).toBe('disk exploded');
   });
+
+  it.each(['rescan', 'rescanIfStale'] as const)(
+    'retries a failed forced-scan save through %s even when file stamps did not change',
+    async (retry) => {
+      const adapter = plugin.app.vault.adapter;
+      await adapter.writeBinary('fonts/probe.ttf', readFixture('probe-sans/probe-sans-400.ttf'));
+      vi.spyOn(adapter, 'stat').mockResolvedValue({ type: 'file', ctime: 1, mtime: 1, size: 1 });
+      await plugin.onload();
+      await plugin.rescan();
+      await adapter.writeBinary(
+        'fonts/probe.ttf',
+        readFixture('probe-sans/probe-sans-700italic.ttf'),
+      );
+      const save = vi
+        .spyOn(plugin, 'saveData')
+        .mockRejectedValueOnce(new Error('disk full'))
+        .mockResolvedValue();
+
+      await expect(plugin.rescan({ force: true })).rejects.toThrow('disk full');
+      await plugin[retry]();
+
+      expect(plugin.settings.cache?.faces[0]).toMatchObject({ weight: 700, italic: true });
+      expect(save).toHaveBeenCalledTimes(2);
+      expect(plugin.lastScanFailure()).toBeNull();
+    },
+  );
 
   it('does not write settings from a scan that outlived the plugin being disabled', async () => {
     await plugin.app.vault.adapter.writeBinary(
@@ -833,6 +866,148 @@ describe('LocalFontsPlugin', () => {
 
     expect(await plugin.rescanIfStale()).toBe(true);
     expect(await plugin.rescanIfStale()).toBe(false);
+  });
+
+  it('verifies different device timestamps without rewriting the shared catalog', async () => {
+    const adapter = plugin.app.vault.adapter;
+    await adapter.writeBinary('fonts/regular.ttf', readFixture('probe-sans/probe-sans-400.ttf'));
+    await adapter.writeBinary('fonts/bold.ttf', readFixture('probe-sans/probe-sans-700italic.ttf'));
+    await plugin.onload();
+    await plugin.rescan();
+    const shared = structuredClone(plugin.settings.cache);
+    const save = vi.spyOn(plugin, 'saveData').mockResolvedValue();
+    const read = vi.spyOn(adapter, 'readBinary');
+    const stat = adapter.stat.bind(adapter);
+    vi.spyOn(adapter, 'stat').mockImplementation(async (path) => {
+      const value = await stat(path);
+      return value === null ? null : { ...value, mtime: value.mtime + 7 };
+    });
+    const list = adapter.list.bind(adapter);
+    vi.spyOn(adapter, 'list').mockImplementation(async (path) => {
+      const value = await list(path);
+      return { files: [...value.files].reverse(), folders: [...value.folders].reverse() };
+    });
+
+    expect(await plugin.rescanIfStale()).toBe(true);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(save).not.toHaveBeenCalled();
+    expect(plugin.settings.cache).toStrictEqual(shared);
+
+    // Exact local times still suppress repeated parsing in this session.
+    read.mockClear();
+    expect(await plugin.rescanIfStale()).toBe(false);
+    expect(read).not.toHaveBeenCalled();
+
+    // A later user setting save must not leak the local timestamps into data.json.
+    Object.assign(plugin.settings, { hardOverride: true });
+    await plugin.saveSettings();
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({ hardOverride: true, cache: shared }),
+    );
+  });
+
+  it('keeps verified local timestamps across plugin reloads without font I/O on load', async () => {
+    const app = plugin.app;
+    const adapter = app.vault.adapter;
+    await adapter.writeBinary('fonts/probe.ttf', readFixture('probe-sans/probe-sans-400.ttf'));
+    await plugin.onload();
+    await plugin.rescan();
+    const saved = structuredClone(plugin.settings);
+    const stat = adapter.stat.bind(adapter);
+    vi.spyOn(adapter, 'stat').mockImplementation(async (path) => {
+      const value = await stat(path);
+      return value === null ? null : { ...value, mtime: value.mtime + 7 };
+    });
+    await plugin.rescanIfStale();
+    plugin.onunload();
+    plugin = new LocalFontsPlugin(app, manifest);
+    vi.spyOn(plugin, 'loadData').mockResolvedValue(saved);
+    const save = vi.spyOn(plugin, 'saveData').mockResolvedValue();
+    const read = vi.spyOn(adapter, 'readBinary');
+
+    await plugin.onload();
+    expect(read).not.toHaveBeenCalled();
+    expect(await plugin.rescanIfStale()).toBe(false);
+    expect(read).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+    expect(plugin.settings).toStrictEqual(saved);
+  });
+
+  it('detects a real same-size replacement even when its timestamp changes by only 1 ms', async () => {
+    const adapter = plugin.app.vault.adapter;
+    const regular = readFixture('probe-sans/probe-sans-400.ttf');
+    const bold = readFixture('probe-sans/probe-sans-700italic.ttf');
+    const padded = new Uint8Array(bold.byteLength);
+    padded.set(new Uint8Array(regular));
+    await adapter.writeBinary('fonts/probe.ttf', padded.buffer);
+    let mtime = 100;
+    const stat = adapter.stat.bind(adapter);
+    vi.spyOn(adapter, 'stat').mockImplementation(async (path) => {
+      const value = await stat(path);
+      return value === null ? null : { ...value, mtime };
+    });
+    await plugin.onload();
+    await plugin.rescan();
+    const save = vi.spyOn(plugin, 'saveData').mockResolvedValue();
+    await adapter.writeBinary('fonts/probe.ttf', bold);
+    mtime = 101;
+
+    expect(await plugin.rescanIfStale()).toBe(true);
+    expect(plugin.settings.cache?.faces[0]).toMatchObject({
+      weight: 700,
+      italic: true,
+      mtime: 101,
+    });
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not rewrite data.json on an unchanged forced rescan', async () => {
+    const adapter = plugin.app.vault.adapter;
+    await adapter.writeBinary('fonts/probe.ttf', readFixture('probe-sans/probe-sans-400.ttf'));
+    await plugin.onload();
+    await plugin.rescan();
+    const save = vi.spyOn(plugin, 'saveData').mockResolvedValue();
+    const read = vi.spyOn(adapter, 'readBinary');
+
+    await plugin.rescan({ force: true });
+
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('supports old apps without the vault-local storage API', async () => {
+    vi.mocked(requireApiVersion).mockReturnValue(false);
+    Object.defineProperty(plugin.app, 'loadLocalStorage', { value: undefined });
+    Object.defineProperty(plugin.app, 'saveLocalStorage', { value: undefined });
+    await plugin.app.vault.adapter.writeBinary(
+      'fonts/probe.ttf',
+      readFixture('probe-sans/probe-sans-400.ttf'),
+    );
+    await plugin.onload();
+
+    await expect(plugin.rescan()).resolves.toBeUndefined();
+    expect(await plugin.rescanIfStale()).toBe(false);
+    expect(plugin.settings.cache?.faces[0]?.family).toBe('Probe Sans');
+  });
+
+  it('still loads fonts and reports when the optional local stamp store fails', async () => {
+    await plugin.app.vault.adapter.writeBinary(
+      'fonts/probe.ttf',
+      readFixture('probe-sans/probe-sans-400.ttf'),
+    );
+    vi.spyOn(plugin.app, 'saveLocalStorage').mockImplementation(() => {
+      throw new Error('quota exceeded');
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await plugin.onload();
+
+    await expect(plugin.rescan()).resolves.toBeUndefined();
+    expect(plugin.settings.cache?.faces[0]?.family).toBe('Probe Sans');
+    expect(warn).toHaveBeenCalledWith(
+      '[local-fonts] could not remember device-local font checks',
+      expect.any(Error),
+    );
+    expect(plugin.lastScanFailure()).toBeNull();
   });
 
   it('rescans automatically once the workspace layout is ready, when the cache is stale', async () => {

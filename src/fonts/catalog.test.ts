@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { readFixture } from '../../tests/fixtures.js';
-import { buildCache, groupIntoFamilies, isCacheStale } from './catalog.js';
+import { buildCache, groupIntoFamilies, isCacheStale, sameCacheMetadata } from './catalog.js';
 import type { FontAdapter } from './scanner.js';
 import { CACHE_VERSION, type FaceRecord, type FontCache } from './types.js';
 
@@ -95,6 +95,21 @@ describe('isCacheStale', () => {
 });
 
 describe('buildCache', () => {
+  it('orders records by path regardless of the adapter traversal order', async () => {
+    const files = ['.fonts/z.ttf', '.fonts/A.ttf', '.fonts/a.ttf'];
+    const adapter: FontAdapter = {
+      list: () => Promise.resolve({ files, folders: [] }),
+      stat: () => Promise.resolve({ size: 1234, mtime: 42 }),
+      readBinary: () => Promise.resolve(readFixture('probe-sans/probe-sans-400.ttf')),
+    };
+
+    expect((await buildCache(adapter, '.fonts')).faces.map((record) => record.path)).toStrictEqual([
+      '.fonts/A.ttf',
+      '.fonts/a.ttf',
+      '.fonts/z.ttf',
+    ]);
+  });
+
   it('keeps every competing format for the same family and weight, choosing none of them', async () => {
     // probe-sans/ has four real files: 400 as ttf, woff2 and woff, plus 700italic.ttf.
     // Picking a "best" format per weight is exactly the platform-dependent decision this
@@ -227,6 +242,45 @@ describe('buildCache', () => {
         [...files].sort((a, b) => a.localeCompare(b)),
       );
     });
+  });
+});
+
+describe('sameCacheMetadata', () => {
+  it('ignores timestamps and file order without mutating either cache', () => {
+    const before = cache([face({}), face({ path: '.fonts/b.ttf', family: 'B' })]);
+    const after = cache([...before.faces].reverse().map((record) => ({ ...record, mtime: 99 })));
+    const original = structuredClone(before);
+
+    expect(sameCacheMetadata(before, after)).toBe(true);
+    expect(before).toStrictEqual(original);
+    expect(after.faces[0]?.path).toBe('.fonts/b.ttf');
+  });
+
+  it.each([
+    { path: '.fonts/renamed.woff2' },
+    { format: 'ttf' },
+    { size: 11 },
+    { family: 'Different' },
+    { weight: 700 },
+    { italic: true },
+    { colorFormats: ['SVG'] },
+    { scripts: ['cyrillic'] },
+    { axes: [{ tag: 'wght', min: 100, max: 900, default: 400 }] },
+    { license: 'Different license' },
+    { source: 'filename' },
+  ] satisfies Array<Partial<FaceRecord>>)('detects changed metadata: %j', (changed) => {
+    expect(sameCacheMetadata(cache([face({})]), cache([face(changed)]))).toBe(false);
+  });
+
+  it('detects absent caches, version, folder and file-set changes', () => {
+    const current = cache([face({})]);
+    expect(sameCacheMetadata(null, current)).toBe(false);
+    expect(sameCacheMetadata({ ...current, version: 0 } as unknown as FontCache, current)).toBe(
+      false,
+    );
+    expect(sameCacheMetadata({ ...current, folder: '.other' }, current)).toBe(false);
+    expect(sameCacheMetadata(cache([]), current)).toBe(false);
+    expect(sameCacheMetadata(current, cache([]))).toBe(false);
   });
 });
 

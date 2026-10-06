@@ -1,10 +1,11 @@
-import { Platform, Plugin } from 'obsidian';
-import { buildCache, groupIntoFamilies, isCacheStale } from './fonts/catalog.js';
+import { Notice, Platform, Plugin, requireApiVersion } from 'obsidian';
+import { buildCache, groupIntoFamilies, isCacheStale, sameCacheMetadata } from './fonts/catalog.js';
 import { buildCss } from './fonts/css.js';
+import { DeviceFontCache } from './fonts/device-cache.js';
 import type { Engine } from './fonts/platform.js';
 import { listStamps, type FontAdapter } from './fonts/scanner.js';
 import { selectFaces } from './fonts/select.js';
-import type { FaceRecord } from './fonts/types.js';
+import type { FaceRecord, FontCache } from './fonts/types.js';
 import { LocalFontsSettingTab } from './settings-tab.js';
 import { DEFAULT_SETTINGS, type PluginSettings } from './settings.js';
 import { isHiddenPath } from './utils/hidden-path.js';
@@ -34,6 +35,8 @@ const SHEET_MARKER_VALUE = '1';
 
 /** How long to wait for Obsidian to append styles.css before reporting it missing. */
 const STYLE_ELEMENT_TIMEOUT_MS = 10_000;
+
+const DEVICE_STAMPS_KEY = 'local-fonts:verified-stamps:v1';
 
 /**
  * Locates the `<style>` element Obsidian created for this plugin's styles.css, by
@@ -116,9 +119,30 @@ export default class LocalFontsPlugin extends Plugin {
   private skipped: string[] = [];
   /** Message from the most recent failed scan, surfaced by the settings tab. */
   private scanError: string | null = null;
+  /** A failed save may follow a forced scan that found changes under identical
+   * stamps. Until a retry succeeds, stamp equality cannot justify reusing records. */
+  private retryScan = false;
   /** Set when a scan found nothing but a non-empty cache was kept, so the settings tab
    *  can say the list it shows was not confirmed against the folder on this device. */
   private unverified: string | null = null;
+  /** Vault-specific localStorage is device-local; it never travels with data.json.
+   * Public since 1.8.7, so older supported apps keep the same optimization in memory.
+   * https://github.com/obsidianmd/obsidian-api/blob/master/obsidian.d.ts */
+  private readonly deviceCache = new DeviceFontCache({
+    load: () =>
+      requireApiVersion('1.8.7') ? (this.app.loadLocalStorage(DEVICE_STAMPS_KEY) as unknown) : null,
+    save: (value) => {
+      if (requireApiVersion('1.8.7')) {
+        this.app.saveLocalStorage(DEVICE_STAMPS_KEY, value);
+      }
+    },
+    onError: (error) => {
+      console.warn('[local-fonts] could not remember device-local font checks', error);
+      new Notice(
+        'Could not remember font checks on this device. Fonts still load, but the next startup may scan them again.',
+      );
+    },
+  });
 
   override async onload(): Promise<void> {
     this.unloaded = false;
@@ -410,7 +434,7 @@ export default class LocalFontsPlugin extends Plugin {
       (path) => {
         skipped.push(path);
       },
-      force ? null : this.settings.cache,
+      force || this.retryScan ? null : this.deviceCache.forScan(this.settings.cache),
     );
     this.skipped = skipped;
     this.scanError = null;
@@ -426,16 +450,34 @@ export default class LocalFontsPlugin extends Plugin {
       this.unverified = describeUnverifiedCache(this.settings.folder);
     } else {
       this.unverified = null;
-      this.settings.cache = cache;
-      // A scan can outlive the plugin being disabled — it is started from the settings
-      // tab and from `onLayoutReady`, neither of which can cancel it. Writing data.json
-      // after `onunload` would have a disabled plugin still touching the vault, and on a
-      // disable-then-enable it would race the fresh instance's own first write.
-      if (!this.unloaded) {
-        await this.saveSettings();
-      }
+      await this.acceptCache(cache);
     }
     this.applyFonts();
+  }
+
+  private async acceptCache(cache: FontCache): Promise<void> {
+    const previous = this.settings.cache;
+    if (!sameCacheMetadata(previous, cache)) {
+      this.settings.cache = cache;
+      // Scans may outlive unload. Neither shared nor local storage may be written
+      // by a disabled instance, where it could race a newly enabled instance.
+      if (!this.unloaded) {
+        try {
+          await this.saveSettings();
+        } catch (error) {
+          // A failed save must remain retryable, not look like a persisted cache.
+          this.settings.cache = previous;
+          this.retryScan = true;
+          throw error;
+        }
+      }
+    }
+    // Preserve shared timestamps and order when metadata is unchanged, including
+    // on later settings saves. Only the device cache gets the newly verified times.
+    if (!this.unloaded) {
+      this.deviceCache.remember(this.settings.cache ?? cache, cache);
+    }
+    this.retryScan = false;
   }
 
   /**
@@ -457,7 +499,10 @@ export default class LocalFontsPlugin extends Plugin {
       // Stamps must come from the folder as it is NOW. Deriving them from the cache would
       // compare the cache against itself and never detect a change.
       const stamps = await listStamps(this.adapter(), this.settings.folder);
-      if (!isCacheStale(this.settings.cache, this.settings.folder, stamps)) {
+      if (
+        !this.retryScan &&
+        !isCacheStale(this.deviceCache.forScan(this.settings.cache), this.settings.folder, stamps)
+      ) {
         return;
       }
       await this.scanNow({});

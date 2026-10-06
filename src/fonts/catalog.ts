@@ -25,6 +25,37 @@ export function isCacheStale(
   });
 }
 
+/** Compare the shared catalog after parsing, ignoring device-local file times and
+ * adapter traversal order. Never use this to decide whether bytes need re-reading:
+ * that still requires the exact path/size/mtime comparison in `isCacheStale`. */
+export function sameCacheMetadata(previous: FontCache | null, next: FontCache): boolean {
+  if (
+    previous?.version !== (next.version as number) ||
+    previous.folder !== next.folder ||
+    previous.faces.length !== next.faces.length
+  ) {
+    return false;
+  }
+  const byPath = new Map(previous.faces.map((face) => [face.path, metadataKey(face)]));
+  return next.faces.every((face) => byPath.get(face.path) === metadataKey(face));
+}
+
+function metadataKey(face: FaceRecord): string {
+  return JSON.stringify([
+    face.path,
+    face.format,
+    face.size,
+    face.family,
+    face.weight,
+    face.italic,
+    face.colorFormats,
+    face.scripts,
+    face.axes.map((axis) => [axis.tag, axis.min, axis.max, axis.default]),
+    face.license,
+    face.source,
+  ]);
+}
+
 /**
  * Index `previous`'s faces by path, but only when it describes the same folder —
  * reusing a record from a different folder's cache would be reusing bytes for a
@@ -80,12 +111,17 @@ export async function buildCache(
     byPath.set(record.path, record);
   }
 
-  // Re-derive the final order from the walk itself (`files`), not from insertion order
-  // into `byPath`, so a reused record and a freshly parsed one land in exactly the
-  // same place a full scan would have put them.
+  // Filesystem traversal order differs across devices. Use code-unit path order,
+  // independent of locale, so a real catalog change is serialized consistently.
   const faces = files
     .map((file) => byPath.get(file.path))
-    .filter((record): record is FaceRecord => record !== undefined);
+    .filter((record): record is FaceRecord => record !== undefined)
+    .sort((a, b) => {
+      if (a.path === b.path) {
+        return 0;
+      }
+      return a.path < b.path ? -1 : 1;
+    });
 
   return { version: CACHE_VERSION, folder, faces };
 }
